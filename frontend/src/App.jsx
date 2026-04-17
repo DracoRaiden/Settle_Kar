@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
+import { Toaster, toast } from "react-hot-toast";
 import "./App.css";
+import ErrorBoundary from "./ErrorBoundary";
 
 const tabs = ["Ledger", "Settle", "Trust Profile"];
 const API_BASE_URL =
@@ -32,6 +34,16 @@ function App() {
     description: "",
     splitAmong: [],
   });
+
+  function showSuccess(message) {
+    setStatusMessage(message);
+    toast.success(message, { duration: 2200 });
+  }
+
+  function showError(message) {
+    setStatusMessage(message);
+    toast.error(message, { duration: 2800 });
+  }
 
   useEffect(() => {
     let isMounted = true;
@@ -87,9 +99,7 @@ function App() {
       } catch {
         if (isMounted) {
           setApiHealthy(false);
-          setStatusMessage(
-            "Could not connect to backend. Ensure FastAPI is running.",
-          );
+          showError("Could not connect to backend. Ensure FastAPI is running.");
         }
       }
     }
@@ -178,7 +188,7 @@ function App() {
       setTrustProfile(profileData);
     } catch (error) {
       setTrustProfile(null);
-      setStatusMessage(error.message || "Failed to load trust profile.");
+      showError(error.message || "Failed to load trust profile.");
     } finally {
       setTrustLoading(false);
     }
@@ -204,7 +214,7 @@ function App() {
       setAssetCatalog(assets);
     } catch (error) {
       setAssetCatalog([]);
-      setStatusMessage(error.message || "Failed to load asset catalog.");
+      showError(error.message || "Failed to load asset catalog.");
     }
   }
 
@@ -218,12 +228,12 @@ function App() {
     setStatusMessage("");
 
     if (expenseForm.splitAmong.length === 0) {
-      setStatusMessage("Pick at least one person in Split Among.");
+      showError("Pick at least one person in Split Among.");
       return;
     }
 
     if (!expenseForm.amount || Number(expenseForm.amount) <= 0) {
-      setStatusMessage("Amount must be greater than zero.");
+      showError("Amount must be greater than zero.");
       return;
     }
 
@@ -253,9 +263,9 @@ function App() {
         description: "",
       }));
       await refreshLedgerData();
-      setStatusMessage("Expense added successfully.");
+      showSuccess("Graph Optimized! Expense added successfully.");
     } catch (error) {
-      setStatusMessage(error.message || "Something went wrong while saving.");
+      showError(error.message || "Something went wrong while saving.");
     } finally {
       setSubmitting(false);
     }
@@ -310,14 +320,14 @@ function App() {
         ...current,
         [transaction.edge_id]: "verified",
       }));
-      setStatusMessage("Receipt verified. Settlement marked as settled.");
+      showSuccess("Receipt Verified! Settlement marked as settled.");
       await refreshLedgerData();
     } catch (error) {
       setReceiptStatusByEdge((current) => ({
         ...current,
         [transaction.edge_id]: "error",
       }));
-      setStatusMessage(error.message || "Receipt upload failed.");
+      showError(error.message || "Receipt upload failed.");
     }
   }
 
@@ -325,7 +335,7 @@ function App() {
     const selectedAssetCode =
       selectedAssetByEdge[transaction.edge_id] || assetCatalog[0]?.asset_code;
     if (!selectedAssetCode) {
-      setStatusMessage("No voucher available to offer.");
+      showError("No voucher available to offer.");
       return;
     }
 
@@ -361,7 +371,7 @@ function App() {
         ...current,
         [transaction.edge_id]: "pending",
       }));
-      setStatusMessage("Asset offset proposed. Waiting for creditor response.");
+      showSuccess("Offset proposed. Waiting for creditor response.");
       await refreshLedgerData();
       await fetchAssetCatalog(activeUser);
     } catch (error) {
@@ -369,7 +379,7 @@ function App() {
         ...current,
         [transaction.edge_id]: "error",
       }));
-      setStatusMessage(error.message || "Failed to propose asset offset.");
+      showError(error.message || "Failed to propose asset offset.");
     }
   }
 
@@ -404,11 +414,11 @@ function App() {
         ...current,
         [offsetId]: action.toLowerCase(),
       }));
-      setStatusMessage(
-        action === "ACCEPT"
-          ? "Asset offset accepted and debt cleared."
-          : "Asset offset rejected.",
-      );
+      if (action === "ACCEPT") {
+        showSuccess("Asset Offset Accepted! Debt cleared.");
+      } else {
+        showSuccess("Asset Offset Rejected.");
+      }
       await refreshLedgerData();
       await fetchAssetCatalog(activeUser);
       await fetchTrustProfile(activeUser);
@@ -417,7 +427,7 @@ function App() {
         ...current,
         [offsetId]: "error",
       }));
-      setStatusMessage(error.message || "Failed to process offset decision.");
+      showError(error.message || "Failed to process offset decision.");
     }
   }
 
@@ -835,6 +845,10 @@ function App() {
 
   return (
     <div className="app-shell">
+      <Toaster
+        position="top-right"
+        toastOptions={{ style: { fontSize: "0.88rem" } }}
+      />
       <header className="top-bar">
         <div className="brand-wrap">
           <span className="brand">Settle Kar</span>
@@ -880,7 +894,7 @@ function App() {
       <main className="tab-content">
         <h1>{activeTab}</h1>
         <p className="active-user">Current active user: {activeUser}</p>
-        {renderTab()}
+        <ErrorBoundary>{renderTab()}</ErrorBoundary>
       </main>
     </div>
   );

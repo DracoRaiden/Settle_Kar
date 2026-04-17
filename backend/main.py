@@ -20,6 +20,20 @@ PREDEFINED_ASSETS = [
         "unit_value": 300.0,
     }
 ]
+DEMO_EXPENSES = [
+    {
+        "paid_by": "User A",
+        "amount": 900.0,
+        "description": "Demo: Team travel",
+        "split_among": ["User A", "User B", "User C"],
+    },
+    {
+        "paid_by": "User C",
+        "amount": 900.0,
+        "description": "Demo: Booth setup",
+        "split_among": ["User A", "User B", "User C"],
+    },
+]
 
 
 class ExpenseCreate(BaseModel):
@@ -245,6 +259,62 @@ def init_db() -> None:
                 )
 
         connection.commit()
+
+
+def seed_demo_graph(connection: sqlite3.Connection) -> None:
+    # Clear all runtime data so every demo starts from a known state.
+    connection.execute("DELETE FROM pending_asset_offsets")
+    connection.execute("DELETE FROM settled_edges")
+    connection.execute("DELETE FROM receipt_hashes")
+    connection.execute("DELETE FROM expense_splits")
+    connection.execute("DELETE FROM expenses")
+    connection.execute("DELETE FROM debt_assignments")
+    connection.execute("DELETE FROM user_asset_wallet")
+    connection.execute("DELETE FROM digital_assets")
+    connection.execute("DELETE FROM users")
+
+    for user_name in DEFAULT_USERS:
+        connection.execute(
+            "INSERT OR IGNORE INTO users(name) VALUES (?)",
+            (user_name,),
+        )
+
+    for asset in PREDEFINED_ASSETS:
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO digital_assets(asset_code, label, unit_value)
+            VALUES (?, ?, ?)
+            """,
+            (asset["asset_code"], asset["label"], asset["unit_value"]),
+        )
+
+    for user_name in DEFAULT_USERS:
+        for asset in PREDEFINED_ASSETS:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO user_asset_wallet(user_name, asset_code, quantity)
+                VALUES (?, ?, ?)
+                """,
+                (user_name, asset["asset_code"], 3),
+            )
+
+    for demo_expense in DEMO_EXPENSES:
+        split_members = sorted(set(demo_expense["split_among"]))
+        shares = split_amount_evenly(float(demo_expense["amount"]), len(split_members))
+        cursor = connection.execute(
+            "INSERT INTO expenses(paid_by, amount, description) VALUES (?, ?, ?)",
+            (
+                demo_expense["paid_by"],
+                float(demo_expense["amount"]),
+                str(demo_expense["description"]),
+            ),
+        )
+        expense_id = int(cursor.lastrowid)
+        for participant, share in zip(split_members, shares):
+            connection.execute(
+                "INSERT INTO expense_splits(expense_id, user_name, share_amount) VALUES (?, ?, ?)",
+                (expense_id, participant, share),
+            )
 
 
 @app.on_event("startup")
@@ -550,6 +620,22 @@ def get_user_trust_profile(
 @app.get("/api/health")
 def health_check() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.post("/api/reset", include_in_schema=False)
+def reset_demo_state() -> dict[str, object]:
+    with get_connection() as connection:
+        seed_demo_graph(connection)
+        balances = compute_net_balances(connection)
+        settlements = optimize_settlements(balances)
+        connection.commit()
+
+    return {
+        "reset": True,
+        "users": DEFAULT_USERS,
+        "demo_expenses": len(DEMO_EXPENSES),
+        "settlements": settlements,
+    }
 
 
 @app.get("/api/users")
@@ -1003,19 +1089,25 @@ async def verify_receipt_for_settlement(
         try:
             image = Image.open(io.BytesIO(file_bytes))
             ocr_text = pytesseract.image_to_string(image)
-        except Exception as error:
+        except Exception:
             raise HTTPException(
-                status_code=500,
-                detail=f"OCR failed. Ensure Tesseract OCR is installed and configured. {error}",
-            ) from error
+                status_code=400,
+                detail="Could not read amount, please retake photo",
+            )
 
         parsed_amount = parse_receipt_amount(ocr_text)
         if parsed_amount is None:
-            raise HTTPException(status_code=400, detail="Could not parse amount from receipt")
+            raise HTTPException(
+                status_code=400,
+                detail="Could not read amount, please retake photo",
+            )
 
         parsed_timestamp = parse_receipt_timestamp(ocr_text)
         if parsed_timestamp is None:
-            raise HTTPException(status_code=400, detail="Could not parse timestamp from receipt")
+            raise HTTPException(
+                status_code=400,
+                detail="Could not read timestamp, please retake photo",
+            )
 
         now = datetime.now()
         if parsed_timestamp < now - timedelta(hours=24) or parsed_timestamp > now + timedelta(minutes=10):
