@@ -19,7 +19,13 @@ function App() {
   const [expenses, setExpenses] = useState([]);
   const [submitting, setSubmitting] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
+  const [trustProfile, setTrustProfile] = useState(null);
+  const [trustLoading, setTrustLoading] = useState(false);
   const [receiptStatusByEdge, setReceiptStatusByEdge] = useState({});
+  const [assetCatalog, setAssetCatalog] = useState([]);
+  const [selectedAssetByEdge, setSelectedAssetByEdge] = useState({});
+  const [offsetStatusByEdge, setOffsetStatusByEdge] = useState({});
+  const [offsetDecisionStatusById, setOffsetDecisionStatusById] = useState({});
   const [expenseForm, setExpenseForm] = useState({
     paidBy: "",
     amount: "",
@@ -124,6 +130,17 @@ function App() {
     [settlements],
   );
 
+  const incomingOffsetRequests = useMemo(
+    () =>
+      pendingSettlements.filter(
+        (transaction) =>
+          transaction.to === activeUser &&
+          transaction.pending_offset &&
+          transaction.settlement_status === "pending_offset",
+      ),
+    [activeUser, pendingSettlements],
+  );
+
   async function refreshLedgerData() {
     const [ledgerResponse, expensesResponse] = await Promise.all([
       fetch(`${API_BASE_URL}/api/ledger`),
@@ -141,6 +158,60 @@ function App() {
     setSettlements(ledgerData.settlements || []);
     setExpenses(expensesData.expenses || []);
   }
+
+  async function fetchTrustProfile(userName) {
+    if (!userName) {
+      return;
+    }
+
+    setTrustLoading(true);
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/api/trust-profile/${encodeURIComponent(userName)}`,
+      );
+      if (!response.ok) {
+        const errorPayload = await response.json().catch(() => ({}));
+        throw new Error(errorPayload.detail || "Failed to load trust profile");
+      }
+
+      const profileData = await response.json();
+      setTrustProfile(profileData);
+    } catch (error) {
+      setTrustProfile(null);
+      setStatusMessage(error.message || "Failed to load trust profile.");
+    } finally {
+      setTrustLoading(false);
+    }
+  }
+
+  async function fetchAssetCatalog(userName) {
+    if (!userName) {
+      setAssetCatalog([]);
+      return;
+    }
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/api/assets?user_name=${encodeURIComponent(userName)}`,
+      );
+      if (!response.ok) {
+        const errorPayload = await response.json().catch(() => ({}));
+        throw new Error(errorPayload.detail || "Failed to load asset catalog");
+      }
+
+      const payload = await response.json();
+      const assets = payload.assets || [];
+      setAssetCatalog(assets);
+    } catch (error) {
+      setAssetCatalog([]);
+      setStatusMessage(error.message || "Failed to load asset catalog.");
+    }
+  }
+
+  useEffect(() => {
+    fetchTrustProfile(activeUser);
+    fetchAssetCatalog(activeUser);
+  }, [activeUser]);
 
   async function handleExpenseSubmit(event) {
     event.preventDefault();
@@ -247,6 +318,106 @@ function App() {
         [transaction.edge_id]: "error",
       }));
       setStatusMessage(error.message || "Receipt upload failed.");
+    }
+  }
+
+  async function handleOffsetProposal(transaction) {
+    const selectedAssetCode =
+      selectedAssetByEdge[transaction.edge_id] || assetCatalog[0]?.asset_code;
+    if (!selectedAssetCode) {
+      setStatusMessage("No voucher available to offer.");
+      return;
+    }
+
+    setStatusMessage("");
+    setOffsetStatusByEdge((current) => ({
+      ...current,
+      [transaction.edge_id]: "submitting",
+    }));
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/offsets/propose`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          from_user: transaction.from,
+          to_user: transaction.to,
+          expected_amount: Number(transaction.amount),
+          asset_code: selectedAssetCode,
+          quantity: 1,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorPayload = await response.json().catch(() => ({}));
+        throw new Error(
+          errorPayload.detail || "Failed to propose asset offset",
+        );
+      }
+
+      setOffsetStatusByEdge((current) => ({
+        ...current,
+        [transaction.edge_id]: "pending",
+      }));
+      setStatusMessage("Asset offset proposed. Waiting for creditor response.");
+      await refreshLedgerData();
+      await fetchAssetCatalog(activeUser);
+    } catch (error) {
+      setOffsetStatusByEdge((current) => ({
+        ...current,
+        [transaction.edge_id]: "error",
+      }));
+      setStatusMessage(error.message || "Failed to propose asset offset.");
+    }
+  }
+
+  async function handleOffsetDecision(offsetId, action) {
+    setStatusMessage("");
+    setOffsetDecisionStatusById((current) => ({
+      ...current,
+      [offsetId]: "submitting",
+    }));
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/offsets/respond`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          offset_id: offsetId,
+          actor_user: activeUser,
+          action,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorPayload = await response.json().catch(() => ({}));
+        throw new Error(
+          errorPayload.detail || "Failed to process offset decision",
+        );
+      }
+
+      setOffsetDecisionStatusById((current) => ({
+        ...current,
+        [offsetId]: action.toLowerCase(),
+      }));
+      setStatusMessage(
+        action === "ACCEPT"
+          ? "Asset offset accepted and debt cleared."
+          : "Asset offset rejected.",
+      );
+      await refreshLedgerData();
+      await fetchAssetCatalog(activeUser);
+      await fetchTrustProfile(activeUser);
+    } catch (error) {
+      setOffsetDecisionStatusById((current) => ({
+        ...current,
+        [offsetId]: "error",
+      }));
+      setStatusMessage(error.message || "Failed to process offset decision.");
     }
   }
 
@@ -384,6 +555,62 @@ function App() {
         <section className="tab-layout single">
           <div className="panel">
             <h2>Optimized Settlements</h2>
+            {incomingOffsetRequests.length > 0 && (
+              <div className="offset-alert-wrap">
+                {incomingOffsetRequests.map((transaction) => {
+                  const pendingOffset = transaction.pending_offset;
+                  const pendingAsset = assetCatalog.find(
+                    (asset) => asset.asset_code === pendingOffset?.asset_code,
+                  );
+                  const isSubmitting =
+                    offsetDecisionStatusById[pendingOffset?.offset_id] ===
+                    "submitting";
+
+                  return (
+                    <div
+                      key={pendingOffset?.offset_id || transaction.edge_id}
+                      className="offset-alert"
+                    >
+                      <p>
+                        <strong>High Priority:</strong> {transaction.from} wants
+                        to settle their {formatCurrency(transaction.amount)}{" "}
+                        debt with {pendingOffset?.quantity || 1}x{" "}
+                        {pendingAsset?.label || pendingOffset?.asset_code}.
+                      </p>
+                      <div className="offset-action-row">
+                        <button
+                          type="button"
+                          className="offset-accept"
+                          disabled={isSubmitting}
+                          onClick={() =>
+                            handleOffsetDecision(
+                              pendingOffset.offset_id,
+                              "ACCEPT",
+                            )
+                          }
+                        >
+                          {isSubmitting ? "Processing..." : "Accept"}
+                        </button>
+                        <button
+                          type="button"
+                          className="offset-reject"
+                          disabled={isSubmitting}
+                          onClick={() =>
+                            handleOffsetDecision(
+                              pendingOffset.offset_id,
+                              "REJECT",
+                            )
+                          }
+                        >
+                          {isSubmitting ? "Processing..." : "Reject"}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
             {settlements.length === 0 ? (
               <p>All balances are settled. No transactions required.</p>
             ) : (
@@ -397,28 +624,118 @@ function App() {
                       const receiptStatus =
                         receiptStatusByEdge[transaction.edge_id] || "idle";
                       const isUploading = receiptStatus === "uploading";
+                      const isDebtor = transaction.from === activeUser;
+                      const pendingOffset = transaction.pending_offset;
+                      const hasPendingOffset =
+                        transaction.settlement_status === "pending_offset" &&
+                        pendingOffset;
+                      const selectedAssetCode =
+                        selectedAssetByEdge[transaction.edge_id] ||
+                        assetCatalog[0]?.asset_code ||
+                        "";
+                      const selectedAsset = assetCatalog.find(
+                        (asset) => asset.asset_code === selectedAssetCode,
+                      );
+                      const isProposingOffset =
+                        offsetStatusByEdge[transaction.edge_id] ===
+                        "submitting";
+
                       return (
                         <li
                           key={transaction.edge_id}
                           className="settlement-item settlement-pending"
                         >
-                          <span>
-                            {transaction.from} pays {transaction.to}{" "}
-                            {formatCurrency(transaction.amount)}
-                          </span>
-                          <label className="upload-btn">
-                            <input
-                              type="file"
-                              accept="image/*"
-                              disabled={isUploading}
-                              onChange={(event) => {
-                                const selectedFile = event.target.files?.[0];
-                                handleReceiptUpload(transaction, selectedFile);
-                                event.target.value = "";
-                              }}
-                            />
-                            {isUploading ? "Verifying..." : "Upload Receipt"}
-                          </label>
+                          <div className="settlement-main">
+                            <span>
+                              {transaction.from} pays {transaction.to}{" "}
+                              {formatCurrency(transaction.amount)}
+                            </span>
+                            {hasPendingOffset && (
+                              <strong className="pending-offset-chip">
+                                Pending Offset
+                              </strong>
+                            )}
+                          </div>
+
+                          {hasPendingOffset ? (
+                            <p className="offset-mini-text">
+                              Waiting for {transaction.to} to review{" "}
+                              {pendingOffset.quantity}x{" "}
+                              {pendingOffset.asset_code}.
+                            </p>
+                          ) : (
+                            <div className="settlement-actions">
+                              <label className="upload-btn">
+                                <input
+                                  type="file"
+                                  accept="image/*"
+                                  disabled={isUploading}
+                                  onChange={(event) => {
+                                    const selectedFile =
+                                      event.target.files?.[0];
+                                    handleReceiptUpload(
+                                      transaction,
+                                      selectedFile,
+                                    );
+                                    event.target.value = "";
+                                  }}
+                                />
+                                {isUploading
+                                  ? "Verifying..."
+                                  : "Upload Receipt"}
+                              </label>
+
+                              {isDebtor && (
+                                <div className="asset-offset-row">
+                                  <select
+                                    value={selectedAssetCode}
+                                    onChange={(event) =>
+                                      setSelectedAssetByEdge((current) => ({
+                                        ...current,
+                                        [transaction.edge_id]:
+                                          event.target.value,
+                                      }))
+                                    }
+                                    disabled={
+                                      isProposingOffset ||
+                                      assetCatalog.length === 0
+                                    }
+                                  >
+                                    {assetCatalog.length === 0 ? (
+                                      <option value="">No assets</option>
+                                    ) : (
+                                      assetCatalog.map((asset) => (
+                                        <option
+                                          key={asset.asset_code}
+                                          value={asset.asset_code}
+                                        >
+                                          {asset.label} (You own:{" "}
+                                          {asset.quantity})
+                                        </option>
+                                      ))
+                                    )}
+                                  </select>
+                                  <button
+                                    type="button"
+                                    className="asset-settle-btn"
+                                    disabled={
+                                      isProposingOffset ||
+                                      !selectedAssetCode ||
+                                      !selectedAsset ||
+                                      selectedAsset.quantity < 1
+                                    }
+                                    onClick={() =>
+                                      handleOffsetProposal(transaction)
+                                    }
+                                  >
+                                    {isProposingOffset
+                                      ? "Proposing..."
+                                      : "Settle with Asset"}
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </li>
                       );
                     })}
@@ -468,9 +785,49 @@ function App() {
       <section className="tab-layout single">
         <div className="panel">
           <h2>Trust Profile</h2>
-          <p>
-            Trust scoring and profile insights will be implemented in Module 3.
-          </p>
+          {!activeUser ? (
+            <p>Select an active user to view trust profile.</p>
+          ) : trustLoading ? (
+            <p>Loading trust profile...</p>
+          ) : trustProfile ? (
+            <div className="trust-card">
+              <div className="trust-header">
+                <p className="trust-user">{trustProfile.user}</p>
+                <span
+                  className={`tier-badge tier-${String(trustProfile.tier || "").toLowerCase()}`}
+                >
+                  {trustProfile.tier}
+                </span>
+              </div>
+
+              <p className="trust-points">
+                {trustProfile.trust_points} Trust Points
+              </p>
+
+              <div className="trust-progress-wrap" aria-label="Trust progress">
+                <div
+                  className="trust-progress-fill"
+                  style={{ width: `${trustProfile.progress_percent || 0}%` }}
+                />
+              </div>
+
+              <p className="trust-meta">
+                Scored settlements: {trustProfile.scored_settlements}
+              </p>
+
+              {trustProfile.points_to_next_tier != null ? (
+                <p className="trust-meta">
+                  {trustProfile.points_to_next_tier} points to reach next tier.
+                </p>
+              ) : (
+                <p className="trust-meta">
+                  Top tier reached. Keep settling fast.
+                </p>
+              )}
+            </div>
+          ) : (
+            <p>Trust profile is unavailable right now.</p>
+          )}
         </div>
       </section>
     );
