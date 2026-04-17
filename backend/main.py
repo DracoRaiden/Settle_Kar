@@ -1,9 +1,15 @@
+import hashlib
+import io
+import re
 import sqlite3
+from datetime import datetime, timedelta
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+import pytesseract
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from PIL import Image
 
 DB_PATH = Path(__file__).with_name("settle_kar.db")
 DEFAULT_USERS = ["User A", "User B", "User C"]
@@ -68,6 +74,34 @@ def init_db() -> None:
                 share_amount REAL NOT NULL,
                 FOREIGN KEY (expense_id) REFERENCES expenses(id) ON DELETE CASCADE,
                 FOREIGN KEY (user_name) REFERENCES users(name)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS receipt_hashes (
+                file_hash TEXT PRIMARY KEY,
+                algorithm TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS settled_edges (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                from_user TEXT NOT NULL,
+                to_user TEXT NOT NULL,
+                amount_cents INTEGER NOT NULL,
+                receipt_hash TEXT NOT NULL,
+                receipt_timestamp TEXT NOT NULL,
+                ocr_amount REAL NOT NULL,
+                ocr_text TEXT NOT NULL,
+                settled_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(from_user, to_user, amount_cents),
+                FOREIGN KEY (from_user) REFERENCES users(name),
+                FOREIGN KEY (to_user) REFERENCES users(name),
+                FOREIGN KEY (receipt_hash) REFERENCES receipt_hashes(file_hash)
             )
             """
         )
@@ -170,6 +204,86 @@ def optimize_settlements(balances: dict[str, float]) -> list[dict[str, float | s
     return settlements
 
 
+def settlement_edge_id(from_user: str, to_user: str, amount: float) -> str:
+    edge_key = f"{from_user}|{to_user}|{round(amount, 2):.2f}"
+    return hashlib.sha256(edge_key.encode("utf-8")).hexdigest()[:16]
+
+
+def parse_receipt_amount(ocr_text: str) -> float | None:
+    normalized_text = ocr_text.replace(",", "")
+    targeted_pattern = re.compile(
+        r"(?:amount|total|paid|rs\.?|pkr)\s*[:\-]?\s*(\d+(?:\.\d{1,2})?)",
+        flags=re.IGNORECASE,
+    )
+    targeted_matches = targeted_pattern.findall(normalized_text)
+    if targeted_matches:
+        return round(float(targeted_matches[-1]), 2)
+
+    fallback_pattern = re.compile(r"\b\d+\.\d{1,2}\b")
+    fallback_matches = fallback_pattern.findall(normalized_text)
+    if fallback_matches:
+        fallback_values = [float(value) for value in fallback_matches]
+        return round(max(fallback_values), 2)
+
+    return None
+
+
+def parse_receipt_timestamp(ocr_text: str) -> datetime | None:
+    date_time_patterns = [
+        (r"\b\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?\b", ["%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"]),
+        (r"\b\d{2}/\d{2}/\d{4}[ T]\d{2}:\d{2}(?::\d{2})?\b", ["%d/%m/%Y %H:%M", "%d/%m/%Y %H:%M:%S", "%m/%d/%Y %H:%M", "%m/%d/%Y %H:%M:%S"]),
+        (r"\b\d{2}-\d{2}-\d{4}[ T]\d{2}:\d{2}(?::\d{2})?\b", ["%d-%m-%Y %H:%M", "%d-%m-%Y %H:%M:%S", "%m-%d-%Y %H:%M", "%m-%d-%Y %H:%M:%S"]),
+    ]
+
+    for pattern, formats in date_time_patterns:
+        for match in re.findall(pattern, ocr_text):
+            normalized_match = match.replace("T", " ")
+            for date_format in formats:
+                try:
+                    return datetime.strptime(normalized_match, date_format)
+                except ValueError:
+                    continue
+
+    return None
+
+
+def build_settlement_rows(
+    connection: sqlite3.Connection,
+    settlements: list[dict[str, float | str]],
+) -> list[dict[str, float | str | bool | None]]:
+    settled_rows = connection.execute(
+        """
+        SELECT from_user, to_user, amount_cents, settled_at
+        FROM settled_edges
+        """
+    ).fetchall()
+    settled_lookup = {
+        (row["from_user"], row["to_user"], int(row["amount_cents"])): row["settled_at"]
+        for row in settled_rows
+    }
+
+    settlement_rows: list[dict[str, float | str | bool | None]] = []
+    for settlement in settlements:
+        from_user = str(settlement["from"])
+        to_user = str(settlement["to"])
+        amount = round(float(settlement["amount"]), 2)
+        amount_cents = int(round(amount * 100))
+        settled_at = settled_lookup.get((from_user, to_user, amount_cents))
+
+        settlement_rows.append(
+            {
+                "edge_id": settlement_edge_id(from_user, to_user, amount),
+                "from": from_user,
+                "to": to_user,
+                "amount": amount,
+                "is_settled": settled_at is not None,
+                "settled_at": settled_at,
+            }
+        )
+
+    return settlement_rows
+
+
 @app.get("/api/health")
 def health_check() -> dict[str, str]:
     return {"status": "ok"}
@@ -247,10 +361,11 @@ def create_expense(payload: ExpenseCreate) -> dict[str, float | int | str | list
 
 
 @app.get("/api/ledger")
-def get_ledger() -> dict[str, list[dict[str, float | str]]]:
+def get_ledger() -> dict[str, list[dict[str, float | str | bool | None]]]:
     with get_connection() as connection:
         balances = compute_net_balances(connection)
         settlements = optimize_settlements(balances)
+        settlement_rows = build_settlement_rows(connection, settlements)
 
     balance_rows = [
         {"user": user, "balance": round(amount, 2)}
@@ -259,5 +374,119 @@ def get_ledger() -> dict[str, list[dict[str, float | str]]]:
 
     return {
         "balances": balance_rows,
-        "settlements": settlements,
+        "settlements": settlement_rows,
+    }
+
+
+@app.post("/api/settlements/verify-receipt")
+async def verify_receipt_for_settlement(
+    from_user: str = Form(...),
+    to_user: str = Form(...),
+    expected_amount: float = Form(..., gt=0),
+    receipt: UploadFile = File(...),
+) -> dict[str, float | str | bool]:
+    with get_connection() as connection:
+        users = set(fetch_users(connection))
+        if from_user not in users or to_user not in users:
+            raise HTTPException(status_code=400, detail="Unknown user in settlement")
+
+        balances = compute_net_balances(connection)
+        live_settlements = optimize_settlements(balances)
+        expected_amount_rounded = round(expected_amount, 2)
+        settlement_exists = any(
+            str(item["from"]) == from_user
+            and str(item["to"]) == to_user
+            and abs(round(float(item["amount"]), 2) - expected_amount_rounded) < 0.01
+            for item in live_settlements
+        )
+        if not settlement_exists:
+            raise HTTPException(status_code=400, detail="Settlement is no longer pending")
+
+        file_bytes = await receipt.read()
+        if not file_bytes:
+            raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+        file_hash = hashlib.sha256(file_bytes).hexdigest()
+        duplicate_hash = connection.execute(
+            "SELECT file_hash FROM receipt_hashes WHERE file_hash = ?",
+            (file_hash,),
+        ).fetchone()
+        if duplicate_hash:
+            raise HTTPException(
+                status_code=409,
+                detail="Duplicate receipt detected. This image was already used.",
+            )
+
+        try:
+            image = Image.open(io.BytesIO(file_bytes))
+            ocr_text = pytesseract.image_to_string(image)
+        except Exception as error:
+            raise HTTPException(
+                status_code=500,
+                detail=f"OCR failed. Ensure Tesseract OCR is installed and configured. {error}",
+            ) from error
+
+        parsed_amount = parse_receipt_amount(ocr_text)
+        if parsed_amount is None:
+            raise HTTPException(status_code=400, detail="Could not parse amount from receipt")
+
+        parsed_timestamp = parse_receipt_timestamp(ocr_text)
+        if parsed_timestamp is None:
+            raise HTTPException(status_code=400, detail="Could not parse timestamp from receipt")
+
+        now = datetime.now()
+        if parsed_timestamp < now - timedelta(hours=24) or parsed_timestamp > now + timedelta(minutes=10):
+            raise HTTPException(
+                status_code=400,
+                detail="Receipt timestamp is not within the last 24 hours",
+            )
+
+        if abs(parsed_amount - expected_amount_rounded) > 0.01:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Amount mismatch. Expected {expected_amount_rounded:.2f}, found {parsed_amount:.2f}",
+            )
+
+        amount_cents = int(round(expected_amount_rounded * 100))
+        connection.execute(
+            "INSERT INTO receipt_hashes(file_hash, algorithm) VALUES (?, ?)",
+            (file_hash, "sha256"),
+        )
+        connection.execute(
+            """
+            INSERT INTO settled_edges(
+                from_user,
+                to_user,
+                amount_cents,
+                receipt_hash,
+                receipt_timestamp,
+                ocr_amount,
+                ocr_text
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(from_user, to_user, amount_cents)
+            DO UPDATE SET
+                receipt_hash = excluded.receipt_hash,
+                receipt_timestamp = excluded.receipt_timestamp,
+                ocr_amount = excluded.ocr_amount,
+                ocr_text = excluded.ocr_text,
+                settled_at = CURRENT_TIMESTAMP
+            """,
+            (
+                from_user,
+                to_user,
+                amount_cents,
+                file_hash,
+                parsed_timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+                parsed_amount,
+                ocr_text,
+            ),
+        )
+        connection.commit()
+
+    return {
+        "verified": True,
+        "from": from_user,
+        "to": to_user,
+        "amount": expected_amount_rounded,
+        "receipt_hash": file_hash,
     }

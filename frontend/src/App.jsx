@@ -19,6 +19,7 @@ function App() {
   const [expenses, setExpenses] = useState([]);
   const [submitting, setSubmitting] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
+  const [receiptStatusByEdge, setReceiptStatusByEdge] = useState({});
   const [expenseForm, setExpenseForm] = useState({
     paidBy: "",
     amount: "",
@@ -100,6 +101,7 @@ function App() {
     }
 
     return settlements
+      .filter((transaction) => !transaction.is_settled)
       .map((transaction) => {
         if (transaction.from === activeUser) {
           return `You owe ${transaction.to} ${formatCurrency(transaction.amount)}`;
@@ -111,6 +113,16 @@ function App() {
       })
       .filter(Boolean);
   }, [activeUser, settlements]);
+
+  const pendingSettlements = useMemo(
+    () => settlements.filter((transaction) => !transaction.is_settled),
+    [settlements],
+  );
+
+  const settledSettlements = useMemo(
+    () => settlements.filter((transaction) => transaction.is_settled),
+    [settlements],
+  );
 
   async function refreshLedgerData() {
     const [ledgerResponse, expensesResponse] = await Promise.all([
@@ -190,6 +202,52 @@ function App() {
         splitAmong: nextMembers,
       };
     });
+  }
+
+  async function handleReceiptUpload(transaction, file) {
+    if (!file) {
+      return;
+    }
+
+    setStatusMessage("");
+    setReceiptStatusByEdge((current) => ({
+      ...current,
+      [transaction.edge_id]: "uploading",
+    }));
+
+    try {
+      const formData = new FormData();
+      formData.append("from_user", transaction.from);
+      formData.append("to_user", transaction.to);
+      formData.append("expected_amount", String(transaction.amount));
+      formData.append("receipt", file);
+
+      const response = await fetch(
+        `${API_BASE_URL}/api/settlements/verify-receipt`,
+        {
+          method: "POST",
+          body: formData,
+        },
+      );
+
+      if (!response.ok) {
+        const errorPayload = await response.json().catch(() => ({}));
+        throw new Error(errorPayload.detail || "Receipt verification failed");
+      }
+
+      setReceiptStatusByEdge((current) => ({
+        ...current,
+        [transaction.edge_id]: "verified",
+      }));
+      setStatusMessage("Receipt verified. Settlement marked as settled.");
+      await refreshLedgerData();
+    } catch (error) {
+      setReceiptStatusByEdge((current) => ({
+        ...current,
+        [transaction.edge_id]: "error",
+      }));
+      setStatusMessage(error.message || "Receipt upload failed.");
+    }
   }
 
   function renderTab() {
@@ -329,14 +387,66 @@ function App() {
             {settlements.length === 0 ? (
               <p>All balances are settled. No transactions required.</p>
             ) : (
-              <ul className="settlement-list">
-                {settlements.map((transaction, index) => (
-                  <li key={`${transaction.from}-${transaction.to}-${index}`}>
-                    {transaction.from} pays {transaction.to}{" "}
-                    {formatCurrency(transaction.amount)}
-                  </li>
-                ))}
-              </ul>
+              <>
+                <h3>Pending</h3>
+                {pendingSettlements.length === 0 ? (
+                  <p>No pending settlements.</p>
+                ) : (
+                  <ul className="settlement-list">
+                    {pendingSettlements.map((transaction) => {
+                      const receiptStatus =
+                        receiptStatusByEdge[transaction.edge_id] || "idle";
+                      const isUploading = receiptStatus === "uploading";
+                      return (
+                        <li
+                          key={transaction.edge_id}
+                          className="settlement-item settlement-pending"
+                        >
+                          <span>
+                            {transaction.from} pays {transaction.to}{" "}
+                            {formatCurrency(transaction.amount)}
+                          </span>
+                          <label className="upload-btn">
+                            <input
+                              type="file"
+                              accept="image/*"
+                              disabled={isUploading}
+                              onChange={(event) => {
+                                const selectedFile = event.target.files?.[0];
+                                handleReceiptUpload(transaction, selectedFile);
+                                event.target.value = "";
+                              }}
+                            />
+                            {isUploading ? "Verifying..." : "Upload Receipt"}
+                          </label>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+
+                <h3>Settled</h3>
+                {settledSettlements.length === 0 ? (
+                  <p>No settlements verified yet.</p>
+                ) : (
+                  <ul className="settlement-list">
+                    {settledSettlements.map((transaction) => (
+                      <li
+                        key={transaction.edge_id}
+                        className="settlement-item settlement-done"
+                      >
+                        <span>
+                          {transaction.from} paid {transaction.to}{" "}
+                          {formatCurrency(transaction.amount)}
+                        </span>
+                        <strong className="settled-chip" aria-label="Settled">
+                          ✔ Settled
+                        </strong>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
             )}
 
             <h3>For {activeUser || "Active User"}</h3>
