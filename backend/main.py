@@ -617,6 +617,15 @@ def get_user_trust_profile(
     }
 
 
+@app.get("/")
+def api_root() -> dict[str, str]:
+    return {
+        "message": "Settle Kar backend is running",
+        "docs": "/docs",
+        "health": "/api/health",
+    }
+
+
 @app.get("/api/health")
 def health_check() -> dict[str, str]:
     return {"status": "ok"}
