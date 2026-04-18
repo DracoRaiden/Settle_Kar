@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 const ROOT_TABS = {
   groups: "groups",
@@ -765,7 +765,7 @@ function AuthScreen({ onAuthenticated }) {
   );
 }
 
-function GroupsScreen({ onSelectGroup }) {
+function GroupsScreen({ groups, onSelectGroup, onCreateGroup }) {
   return (
     <section className="w-full font-sans">
       <header className="mb-5">
@@ -776,7 +776,7 @@ function GroupsScreen({ onSelectGroup }) {
       </header>
 
       <div className="overflow-y-auto">
-        {GROUPS_MOCK.map((group) => {
+        {groups.map((group) => {
           const balances = calculateBalancesFromExpenses(
             group.members,
             group.expenses,
@@ -823,10 +823,240 @@ function GroupsScreen({ onSelectGroup }) {
 
       <button
         type="button"
+        onClick={onCreateGroup}
         className="w-full bg-slate-900 text-white font-semibold py-3.5 rounded-xl mt-6 shadow-md active:scale-95 transition-transform"
       >
         Create New Group
       </button>
+    </section>
+  );
+}
+
+function CreateGroupScreen({ authUser, onCancel, onCreateGroup }) {
+  const [groupName, setGroupName] = useState("");
+  const [phoneQuery, setPhoneQuery] = useState("");
+  const [status, setStatus] = useState("");
+  const [isSearching, setIsSearching] = useState(false);
+  const [members, setMembers] = useState(() => {
+    const creatorName = authUser.username.trim() || "You";
+    const creatorInitials = (
+      creatorName
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((part) => part[0])
+        .join("")
+        .slice(0, 2) || "ME"
+    ).toUpperCase();
+
+    return [
+      {
+        id: `phone-${normalizePhoneNumber(authUser.phone) || "me"}`,
+        initials: creatorInitials,
+        name: creatorName,
+        phone: normalizePhoneNumber(authUser.phone) || authUser.phone,
+        isCreator: true,
+      },
+    ];
+  });
+
+  async function handleSearchAndAddMember() {
+    const normalizedPhone = normalizePhoneNumber(phoneQuery);
+    if (!normalizedPhone) {
+      setStatus("Enter a phone number to search.");
+      return;
+    }
+
+    if (
+      members.some(
+        (member) => normalizePhoneNumber(member.phone) === normalizedPhone,
+      )
+    ) {
+      setStatus("This member is already added.");
+      setPhoneQuery("");
+      return;
+    }
+
+    setIsSearching(true);
+    setStatus("");
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/api/users/lookup?phone=${encodeURIComponent(normalizedPhone)}`,
+      );
+      const data = await response.json();
+
+      if (!response.ok) {
+        setStatus(data.detail ?? "No user found for this phone number.");
+        return;
+      }
+
+      const resolvedName = data?.user?.username?.trim() || "New Member";
+      const initials = (
+        resolvedName
+          .split(/\s+/)
+          .filter(Boolean)
+          .map((part) => part[0])
+          .join("")
+          .slice(0, 2) ||
+        normalizedPhone.slice(-2) ||
+        "NA"
+      ).toUpperCase();
+
+      setMembers((current) => [
+        ...current,
+        {
+          id: `phone-${normalizedPhone}`,
+          initials,
+          name: resolvedName,
+          phone: data?.user?.phone || normalizedPhone,
+          isCreator: false,
+        },
+      ]);
+      setPhoneQuery("");
+      setStatus(`${resolvedName} added to group draft.`);
+    } catch {
+      setStatus("Could not search users. Make sure backend is running.");
+    } finally {
+      setIsSearching(false);
+    }
+  }
+
+  function handleRemoveMember(memberId) {
+    setMembers((current) =>
+      current.filter((member) => member.id !== memberId || member.isCreator),
+    );
+  }
+
+  function handleCreateGroup() {
+    const trimmedName = groupName.trim();
+    if (!trimmedName) {
+      setStatus("Please enter a group name.");
+      return;
+    }
+
+    const creator = members.find((member) => member.isCreator) || members[0];
+    const newGroup = {
+      id: `${trimmedName.toLowerCase().replace(/\s+/g, "-")}-${Date.now()}`,
+      name: trimmedName,
+      activeMemberId: creator.id,
+      members: members.map(({ isCreator, ...member }) => member),
+      expenses: [],
+    };
+
+    onCreateGroup(newGroup);
+  }
+
+  return (
+    <section className="w-full font-sans">
+      <header className="mb-6 flex items-center justify-between">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-sm font-medium text-slate-600 hover:bg-slate-100"
+        >
+          <span aria-hidden="true">&lt;-</span>
+          <span>Back</span>
+        </button>
+        <h1 className="text-lg font-bold text-slate-900">Create Group</h1>
+        <div className="w-12" aria-hidden="true" />
+      </header>
+
+      <div className="space-y-5">
+        <div className="rounded-2xl border border-slate-100 bg-white p-4 shadow-sm">
+          <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Group Name
+          </label>
+          <input
+            type="text"
+            value={groupName}
+            onChange={(event) => setGroupName(event.target.value)}
+            placeholder="e.g. Office Lunch"
+            className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-slate-400"
+          />
+        </div>
+
+        <div className="rounded-2xl border border-slate-100 bg-white p-4 shadow-sm">
+          <div className="mb-3 flex items-center justify-between">
+            <div>
+              <h2 className="text-sm font-semibold text-slate-900">
+                Add Members
+              </h2>
+              <p className="text-xs text-slate-500">
+                Search registered users by phone number.
+              </p>
+            </div>
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
+              {members.length} selected
+            </span>
+          </div>
+
+          <div className="flex gap-2">
+            <input
+              type="tel"
+              value={phoneQuery}
+              onChange={(event) => setPhoneQuery(event.target.value)}
+              placeholder="Type phone and search"
+              className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-slate-400"
+            />
+            <button
+              type="button"
+              onClick={handleSearchAndAddMember}
+              disabled={isSearching}
+              className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white shadow-sm active:scale-95 disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              {isSearching ? "Searching..." : "Search"}
+            </button>
+          </div>
+
+          {status && (
+            <p className="mt-3 rounded-xl bg-slate-100 px-3 py-2 text-xs font-medium text-slate-700">
+              {status}
+            </p>
+          )}
+
+          <div className="mt-4 space-y-2">
+            {members.map((member) => (
+              <div
+                key={member.id}
+                className="flex items-center justify-between rounded-2xl bg-slate-50 px-4 py-3"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-200 text-xs font-bold text-slate-700">
+                    {member.initials}
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">
+                      {member.name}
+                    </p>
+                    <p className="text-xs text-slate-500">{member.phone}</p>
+                  </div>
+                </div>
+                {member.isCreator ? (
+                  <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700">
+                    You
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveMember(member.id)}
+                    className="rounded-full bg-rose-100 px-3 py-1 text-xs font-semibold text-rose-700"
+                  >
+                    Remove
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={handleCreateGroup}
+          className="w-full rounded-xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-white shadow-md"
+        >
+          Create Group
+        </button>
+      </div>
     </section>
   );
 }
@@ -1025,17 +1255,244 @@ function GroupDetailScreen({ group, onBack }) {
   );
 }
 
-function TrustScreen() {
+function TrustScreen({ authUser }) {
+  const [trustProfile, setTrustProfile] = useState(null);
+  const [settlementStats, setSettlementStats] = useState({
+    settled: 0,
+    pendingReceipt: 0,
+    pendingOffset: 0,
+  });
+  const [isLoading, setIsLoading] = useState(true);
+  const [errorMessage, setErrorMessage] = useState("");
+
+  function tierStyles(tier) {
+    if (tier === "Gold") {
+      return "bg-amber-100 text-amber-700";
+    }
+    if (tier === "Silver") {
+      return "bg-slate-200 text-slate-700";
+    }
+    return "bg-orange-100 text-orange-700";
+  }
+
+  async function loadTrustData() {
+    setIsLoading(true);
+    setErrorMessage("");
+
+    try {
+      const profileResponse = await fetch(
+        `${API_BASE_URL}/api/trust-profile/${encodeURIComponent(authUser.username)}`,
+      );
+      const profileData = await profileResponse.json();
+      if (!profileResponse.ok) {
+        throw new Error(profileData.detail ?? "Could not load trust profile.");
+      }
+
+      const ledgerResponse = await fetch(`${API_BASE_URL}/api/ledger`);
+      const ledgerData = await ledgerResponse.json();
+      if (!ledgerResponse.ok) {
+        throw new Error(
+          ledgerData.detail ?? "Could not load settlement stats.",
+        );
+      }
+
+      const settlements = Array.isArray(ledgerData?.settlements)
+        ? ledgerData.settlements
+        : [];
+      const stats = settlements.reduce(
+        (acc, row) => {
+          if (row.is_settled) {
+            acc.settled += 1;
+          } else if (row.settlement_status === "pending_offset") {
+            acc.pendingOffset += 1;
+          } else {
+            acc.pendingReceipt += 1;
+          }
+          return acc;
+        },
+        { settled: 0, pendingReceipt: 0, pendingOffset: 0 },
+      );
+
+      setTrustProfile(profileData);
+      setSettlementStats(stats);
+    } catch (error) {
+      setErrorMessage(error.message || "Could not load trust data.");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadTrustData();
+  }, [authUser.username]);
+
+  if (isLoading) {
+    return (
+      <section className="w-full font-sans">
+        <header className="mb-5">
+          <h1 className="text-2xl font-bold text-slate-900">Trust</h1>
+          <p className="text-sm text-slate-500">Loading trust dashboard...</p>
+        </header>
+        <div className="rounded-2xl border border-slate-100 bg-white p-5 shadow-sm">
+          <p className="text-sm text-slate-500">Fetching trust profile data.</p>
+        </div>
+      </section>
+    );
+  }
+
+  if (errorMessage) {
+    return (
+      <section className="w-full font-sans">
+        <header className="mb-5">
+          <h1 className="text-2xl font-bold text-slate-900">Trust</h1>
+          <p className="text-sm text-slate-500">
+            Your repayment reputation snapshot.
+          </p>
+        </header>
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-rose-200 bg-rose-50 p-5 shadow-sm">
+            <p className="text-sm font-semibold text-rose-700">
+              Could not load trust data
+            </p>
+            <p className="mt-1 text-sm text-rose-600">{errorMessage}</p>
+          </div>
+          <button
+            type="button"
+            onClick={loadTrustData}
+            className="w-full rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white"
+          >
+            Retry
+          </button>
+        </div>
+      </section>
+    );
+  }
+
   return (
     <section className="w-full font-sans">
       <header className="mb-5">
-        <h1 className="text-2xl font-bold text-slate-900">Settle Kar</h1>
+        <h1 className="text-2xl font-bold text-slate-900">Trust</h1>
         <p className="text-sm text-slate-500">
-          Trust metrics and profile insights are coming soon.
+          Your repayment reputation snapshot.
         </p>
       </header>
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-5 mb-4 flex flex-col gap-3">
-        <p className="text-sm text-slate-500">Trust screen placeholder</p>
+
+      <div className="space-y-4">
+        <div className="rounded-3xl bg-slate-900 p-5 text-white shadow-lg shadow-slate-900/15">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-xs uppercase tracking-[0.18em] text-slate-300">
+                Trust Points
+              </p>
+              <p className="mt-2 text-4xl font-bold leading-none">
+                {trustProfile.trust_points}
+              </p>
+            </div>
+            <span
+              className={`rounded-full px-3 py-1 text-xs font-bold ${tierStyles(trustProfile.tier)}`}
+            >
+              {trustProfile.tier}
+            </span>
+          </div>
+
+          <div className="mt-4">
+            <div className="mb-1 flex items-center justify-between text-xs text-slate-300">
+              <span>Tier progress</span>
+              <span>{trustProfile.progress_percent}%</span>
+            </div>
+            <div className="h-2 overflow-hidden rounded-full bg-slate-700">
+              <div
+                className="h-full rounded-full bg-emerald-400"
+                style={{ width: `${trustProfile.progress_percent}%` }}
+              />
+            </div>
+          </div>
+
+          <p className="mt-3 text-xs text-slate-300">
+            {trustProfile.points_to_next_tier === null
+              ? "You are at the highest tier."
+              : `${trustProfile.points_to_next_tier} points to next tier (${trustProfile.next_tier_threshold}).`}
+          </p>
+        </div>
+
+        <div className="grid grid-cols-3 gap-3">
+          <div className="rounded-2xl border border-slate-100 bg-white p-3 shadow-sm">
+            <p className="text-[11px] uppercase tracking-wide text-slate-500">
+              Scored
+            </p>
+            <p className="mt-1 text-xl font-bold text-slate-900">
+              {trustProfile.scored_settlements}
+            </p>
+          </div>
+          <div className="rounded-2xl border border-slate-100 bg-white p-3 shadow-sm">
+            <p className="text-[11px] uppercase tracking-wide text-slate-500">
+              Settled
+            </p>
+            <p className="mt-1 text-xl font-bold text-emerald-700">
+              {settlementStats.settled}
+            </p>
+          </div>
+          <div className="rounded-2xl border border-slate-100 bg-white p-3 shadow-sm">
+            <p className="text-[11px] uppercase tracking-wide text-slate-500">
+              Pending
+            </p>
+            <p className="mt-1 text-xl font-bold text-amber-700">
+              {settlementStats.pendingReceipt + settlementStats.pendingOffset}
+            </p>
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-slate-100 bg-white p-4 shadow-sm">
+          <h2 className="text-sm font-semibold text-slate-900">
+            Settlement Queue
+          </h2>
+          <div className="mt-3 space-y-2 text-sm">
+            <div className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2">
+              <span className="text-slate-600">
+                Awaiting receipt verification
+              </span>
+              <span className="font-semibold text-slate-900">
+                {settlementStats.pendingReceipt}
+              </span>
+            </div>
+            <div className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2">
+              <span className="text-slate-600">
+                Awaiting asset offset decision
+              </span>
+              <span className="font-semibold text-slate-900">
+                {settlementStats.pendingOffset}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-slate-100 bg-white p-4 shadow-sm">
+          <h2 className="text-sm font-semibold text-slate-900">
+            How points are calculated
+          </h2>
+          <p className="mt-2 text-xs text-slate-500">
+            Based on verified settlement speed.
+          </p>
+          <div className="mt-3 space-y-2 text-sm text-slate-700">
+            <p className="rounded-xl bg-emerald-50 px-3 py-2">
+              Within 2 hours: +10 points
+            </p>
+            <p className="rounded-xl bg-sky-50 px-3 py-2">
+              Within 24 hours: +5 points
+            </p>
+            <p className="rounded-xl bg-rose-50 px-3 py-2">
+              After 48 hours: -5 points
+            </p>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={loadTrustData}
+          className="w-full rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white"
+        >
+          Refresh Trust Data
+        </button>
       </div>
     </section>
   );
@@ -1104,6 +1561,8 @@ function BottomNavigation({ activeTab, onChange }) {
 export default function App() {
   const [activeTab, setActiveTab] = useState(ROOT_TABS.groups);
   const [selectedGroup, setSelectedGroup] = useState(null);
+  const [groups, setGroups] = useState(GROUPS_MOCK);
+  const [isCreatingGroup, setIsCreatingGroup] = useState(false);
   const [authUser, setAuthUser] = useState(() => {
     try {
       const persisted = localStorage.getItem("settle_kar_auth_user");
@@ -1117,6 +1576,13 @@ export default function App() {
     localStorage.removeItem("settle_kar_auth_user");
     setAuthUser(null);
     setSelectedGroup(null);
+    setActiveTab(ROOT_TABS.groups);
+  }
+
+  function handleCreateGroup(newGroup) {
+    setGroups((current) => [newGroup, ...current]);
+    setIsCreatingGroup(false);
+    setSelectedGroup(newGroup);
     setActiveTab(ROOT_TABS.groups);
   }
 
@@ -1147,10 +1613,23 @@ export default function App() {
             onBack={() => setSelectedGroup(null)}
           />
         )}
-        {!selectedGroup && activeTab === ROOT_TABS.groups && (
-          <GroupsScreen onSelectGroup={setSelectedGroup} />
+        {!selectedGroup && isCreatingGroup && (
+          <CreateGroupScreen
+            authUser={authUser}
+            onCancel={() => setIsCreatingGroup(false)}
+            onCreateGroup={handleCreateGroup}
+          />
         )}
-        {activeTab === ROOT_TABS.trust && <TrustScreen />}
+        {!selectedGroup &&
+          !isCreatingGroup &&
+          activeTab === ROOT_TABS.groups && (
+            <GroupsScreen
+              groups={groups}
+              onSelectGroup={setSelectedGroup}
+              onCreateGroup={() => setIsCreatingGroup(true)}
+            />
+          )}
+        {activeTab === ROOT_TABS.trust && <TrustScreen authUser={authUser} />}
         {activeTab === ROOT_TABS.profile && (
           <ProfileScreen authUser={authUser} onLogout={handleLogout} />
         )}

@@ -711,9 +711,20 @@ def register_user(payload: RegisterRequest) -> dict[str, bool | dict[str, int | 
         if existing_user is not None:
             raise HTTPException(status_code=409, detail="Phone number is already registered")
 
+        username_exists = connection.execute(
+            "SELECT name FROM users WHERE name = ?",
+            (username,),
+        ).fetchone()
+        if username_exists is not None:
+            raise HTTPException(status_code=409, detail="Username is already taken")
+
         cursor = connection.execute(
             "INSERT INTO app_users(phone, username) VALUES (?, ?)",
             (normalized_phone, username),
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO users(name) VALUES (?)",
+            (username,),
         )
         connection.commit()
 
@@ -1314,7 +1325,18 @@ def get_trust_profile(user_name: str) -> dict[str, int | str | float | None]:
     with get_connection() as connection:
         users = set(fetch_users(connection))
         if user_name not in users:
-            raise HTTPException(status_code=404, detail="User not found")
+            app_user = connection.execute(
+                "SELECT username FROM app_users WHERE username = ? LIMIT 1",
+                (user_name,),
+            ).fetchone()
+            if app_user is None:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            connection.execute(
+                "INSERT OR IGNORE INTO users(name) VALUES (?)",
+                (user_name,),
+            )
+            connection.commit()
 
         return get_user_trust_profile(connection, user_name)
 
