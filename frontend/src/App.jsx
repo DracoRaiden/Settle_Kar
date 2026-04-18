@@ -6,7 +6,7 @@ const ROOT_TABS = {
   profile: "profile",
 };
 
-const API_BASE_URL = "http://127.0.0.1:8000";
+const API_BASE_URL = "/_/backend";
 
 function normalizePhoneNumber(phone) {
   const digitsOnly = phone.replace(/\D/g, "");
