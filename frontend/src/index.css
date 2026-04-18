@@ -3,12 +3,25 @@
 }
 
 :root {
-  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
-  color: #111827;
-  background-color: #f8fafc;
+  font-family:
+    Inter,
+    Roboto,
+    "Segoe UI",
+    system-ui,
+    -apple-system,
+    sans-serif;
+  color: #0f172a;
+  background-color: #f3f7fb;
   line-height: 1.5;
 }
 
 body {
   margin: 0;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
 }

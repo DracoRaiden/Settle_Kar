@@ -7,6 +7,128 @@ const tabs = ["Ledger", "Settle", "Trust Profile"];
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
 
+const TAB_META = {
+  Ledger: {
+    label: "Ledger",
+    icon: LedgerIcon,
+  },
+  Settle: {
+    label: "Settle",
+    icon: SwapIcon,
+  },
+  "Trust Profile": {
+    label: "Trust",
+    icon: UserShieldIcon,
+  },
+};
+
+function LedgerIcon({ className }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
+      <path d="M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Zm2 3v2h10V7H7Zm0 4v2h10v-2H7Zm0 4v2h6v-2H7Z" />
+    </svg>
+  );
+}
+
+function SwapIcon({ className }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
+      <path d="M7 7h10l-2.5-2.5L16 3l5 5-5 5-1.5-1.5L17 9H7V7Zm10 10H7l2.5 2.5L8 21l-5-5 5-5 1.5 1.5L7 15h10v2Z" />
+    </svg>
+  );
+}
+
+function UserShieldIcon({ className }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
+      <path d="M12 2 4 5v6c0 5.25 3.55 10.12 8 11 4.45-.88 8-5.75 8-11V5l-8-3Zm0 5a3 3 0 1 1 0 6 3 3 0 0 1 0-6Zm-4 11a4 4 0 0 1 8 0H8Z" />
+    </svg>
+  );
+}
+
+function PlusIcon({ className }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
+      <path d="M11 5h2v14h-2V5Zm-6 6h14v2H5v-2Z" />
+    </svg>
+  );
+}
+
+function ChevronUpIcon({ className }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
+      <path d="m7 14 5-5 5 5H7Z" />
+    </svg>
+  );
+}
+
+function CloseIcon({ className }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
+      <path d="M18.3 5.7 12 12l6.3 6.3-1.4 1.4L10.6 13.4 4.3 19.7 2.9 18.3 9.2 12 2.9 5.7 4.3 4.3l6.3 6.3 6.3-6.3 1.4 1.4Z" />
+    </svg>
+  );
+}
+
+function avatarLabel(name) {
+  if (!name) {
+    return "?";
+  }
+
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join("");
+}
+
+function categoryForExpense(description) {
+  const normalized = String(description || "").toLowerCase();
+  if (/food|meal|dinner|lunch|breakfast|coffee|snack/.test(normalized)) {
+    return { icon: "🍽️", label: "Food" };
+  }
+  if (/travel|fuel|ride|cab|taxi|trip|bus|train/.test(normalized)) {
+    return { icon: "🧭", label: "Travel" };
+  }
+  if (/booth|setup|stage|print|poster|banner|marketing/.test(normalized)) {
+    return { icon: "🧾", label: "Operations" };
+  }
+  if (/rent|hotel|stay|room/.test(normalized)) {
+    return { icon: "🏨", label: "Stay" };
+  }
+
+  return { icon: "💸", label: "Expense" };
+}
+
+function buildExpenseShare(expense, activeUser) {
+  const participants = expense.split_among || [];
+  if (
+    !participants.length ||
+    !activeUser ||
+    !participants.includes(activeUser)
+  ) {
+    return 0;
+  }
+
+  return Number((Number(expense.amount) / participants.length).toFixed(2));
+}
+
+function netBalanceForUser(ledgerBalances, activeUser) {
+  const match = ledgerBalances.find((row) => row.user === activeUser);
+  return match?.balance || 0;
+}
+
+function formatSignedCurrency(value) {
+  const number = Number(value || 0);
+  const absolute = Math.abs(number).toFixed(2);
+  return number >= 0 ? `+Rs. ${absolute}` : `-Rs. ${absolute}`;
+}
+
+function formatShortCurrency(value) {
+  return `Rs. ${Number(value || 0).toFixed(2)}`;
+}
+
 function formatCurrency(value) {
   return `Rs. ${Number(value).toFixed(2)}`;
 }
@@ -28,6 +150,8 @@ function App() {
   const [selectedAssetByEdge, setSelectedAssetByEdge] = useState({});
   const [offsetStatusByEdge, setOffsetStatusByEdge] = useState({});
   const [offsetDecisionStatusById, setOffsetDecisionStatusById] = useState({});
+  const [isExpenseSheetOpen, setIsExpenseSheetOpen] = useState(false);
+  const [isProfileSheetOpen, setIsProfileSheetOpen] = useState(false);
   const [expenseForm, setExpenseForm] = useState({
     paidBy: "",
     amount: "",
@@ -223,6 +347,58 @@ function App() {
     fetchAssetCatalog(activeUser);
   }, [activeUser]);
 
+  useEffect(() => {
+    if (!isExpenseSheetOpen) {
+      return undefined;
+    }
+
+    const originalOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    return () => {
+      document.body.style.overflow = originalOverflow;
+    };
+  }, [isExpenseSheetOpen]);
+
+  useEffect(() => {
+    if (!isProfileSheetOpen) {
+      return undefined;
+    }
+
+    const originalOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    return () => {
+      document.body.style.overflow = originalOverflow;
+    };
+  }, [isProfileSheetOpen]);
+
+  const activeBalance = useMemo(
+    () => netBalanceForUser(ledgerBalances, activeUser),
+    [activeUser, ledgerBalances],
+  );
+
+  const balanceTone =
+    activeBalance > 0 ? "positive" : activeBalance < 0 ? "negative" : "neutral";
+
+  const activeUserInitials = avatarLabel(activeUser || users[0] || "User");
+
+  const expenseDraftTotal = useMemo(
+    () => Number(expenseForm.amount || 0),
+    [expenseForm.amount],
+  );
+
+  const splitEligibleUsers = users.length > 0 ? users : [];
+
+  const selectedExpenseUsers =
+    expenseForm.splitAmong.length > 0
+      ? expenseForm.splitAmong
+      : splitEligibleUsers;
+
+  const expenseSplitCount = selectedExpenseUsers.length || 1;
+  const expenseSplitPerPerson =
+    expenseDraftTotal > 0 ? expenseDraftTotal / expenseSplitCount : 0;
+
   async function handleExpenseSubmit(event) {
     event.preventDefault();
     setStatusMessage("");
@@ -262,6 +438,7 @@ function App() {
         amount: "",
         description: "",
       }));
+      setIsExpenseSheetOpen(false);
       await refreshLedgerData();
       showSuccess("Graph Optimized! Expense added successfully.");
     } catch (error) {
@@ -283,6 +460,33 @@ function App() {
         splitAmong: nextMembers,
       };
     });
+  }
+
+  function openExpenseSheet() {
+    setExpenseForm((current) => ({
+      ...current,
+      paidBy: current.paidBy || activeUser || users[0] || "",
+      splitAmong:
+        current.splitAmong.length > 0 ? current.splitAmong : users.slice(),
+    }));
+    setIsExpenseSheetOpen(true);
+  }
+
+  function closeExpenseSheet() {
+    setIsExpenseSheetOpen(false);
+  }
+
+  function openProfileSheet() {
+    setIsProfileSheetOpen(true);
+  }
+
+  function closeProfileSheet() {
+    setIsProfileSheetOpen(false);
+  }
+
+  function selectActiveUser(userName) {
+    setActiveUser(userName);
+    setIsProfileSheetOpen(false);
   }
 
   async function handleReceiptUpload(transaction, file) {
@@ -431,131 +635,102 @@ function App() {
     }
   }
 
+  function renderLedgerHero() {
+    const isPositive = activeBalance > 0;
+    const heroValue =
+      activeBalance === 0 ? "Settled up" : formatSignedCurrency(activeBalance);
+    const subtitle = isPositive
+      ? "You are owed money."
+      : activeBalance < 0
+        ? "You owe the group."
+        : "You are perfectly balanced.";
+
+    return (
+      <section className={`hero-card tone-${balanceTone}`}>
+        <div className="hero-copy">
+          <p className="eyebrow">Net Balance</p>
+          <h2>{heroValue}</h2>
+          <p className="hero-subtitle">{subtitle}</p>
+        </div>
+
+        <div className="hero-meta">
+          <div className="hero-pill">
+            <span>Active user</span>
+            <strong>{activeUser || "Select user"}</strong>
+          </div>
+          <div className="hero-pill hero-pill-muted">
+            <span>Trust tier</span>
+            <strong>{trustProfile?.tier || "Bronze"}</strong>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  function renderExpenseList() {
+    if (expenses.length === 0) {
+      return (
+        <p className="empty-state">No expenses yet. Create the first one.</p>
+      );
+    }
+
+    return (
+      <ul className="txn-list">
+        {expenses.map((expense) => {
+          const category = categoryForExpense(expense.description);
+          const splitShare = buildExpenseShare(expense, activeUser);
+          const isOwed = activeUser && expense.paid_by === activeUser;
+
+          return (
+            <li key={expense.id} className="txn-card">
+              <div className="txn-icon" aria-hidden="true">
+                <span>{category.icon}</span>
+              </div>
+              <div className="txn-body">
+                <div className="txn-title-row">
+                  <strong>{expense.description || "Untitled expense"}</strong>
+                  <span className="txn-badge">{category.label}</span>
+                </div>
+                <p>
+                  Paid by {expense.paid_by}
+                  {expense.split_among?.length
+                    ? ` • Split with ${expense.split_among.length}`
+                    : ""}
+                </p>
+              </div>
+              <div className={`txn-amount ${isOwed ? "credit" : "debit"}`}>
+                <strong>{formatShortCurrency(splitShare)}</strong>
+                <span>{isOwed ? "You received" : "Your share"}</span>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    );
+  }
+
   function renderTab() {
     if (activeTab === "Ledger") {
       return (
-        <section className="tab-layout">
-          <div className="panel">
-            <h2>Add Group Expense</h2>
-            <form className="expense-form" onSubmit={handleExpenseSubmit}>
-              <label>
-                <span>Paid By</span>
-                <select
-                  value={expenseForm.paidBy}
-                  onChange={(event) =>
-                    setExpenseForm((current) => ({
-                      ...current,
-                      paidBy: event.target.value,
-                    }))
-                  }
-                >
-                  {users.map((user) => (
-                    <option key={user} value={user}>
-                      {user}
-                    </option>
-                  ))}
-                </select>
-              </label>
+        <section className="ledger-screen">
+          {renderLedgerHero()}
 
-              <label>
-                <span>Amount</span>
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={expenseForm.amount}
-                  onChange={(event) =>
-                    setExpenseForm((current) => ({
-                      ...current,
-                      amount: event.target.value,
-                    }))
-                  }
-                  placeholder="e.g. 1200"
-                />
-              </label>
+          <button
+            type="button"
+            className="new-expense-btn"
+            onClick={openExpenseSheet}
+          >
+            <PlusIcon className="nav-icon" />
+            <span>New Expense</span>
+          </button>
 
-              <label>
-                <span>Description</span>
-                <input
-                  type="text"
-                  value={expenseForm.description}
-                  onChange={(event) =>
-                    setExpenseForm((current) => ({
-                      ...current,
-                      description: event.target.value,
-                    }))
-                  }
-                  placeholder="Dinner, fuel, groceries"
-                />
-              </label>
-
-              <fieldset className="split-box">
-                <legend>Split Among</legend>
-                {users.map((user) => (
-                  <label key={user} className="checkbox-row">
-                    <input
-                      type="checkbox"
-                      checked={expenseForm.splitAmong.includes(user)}
-                      onChange={() => toggleSplitMember(user)}
-                    />
-                    <span>{user}</span>
-                  </label>
-                ))}
-              </fieldset>
-
-              <button type="submit" disabled={submitting || users.length === 0}>
-                {submitting ? "Adding..." : "Add Expense"}
-              </button>
-            </form>
-            {statusMessage && <p className="status-text">{statusMessage}</p>}
-          </div>
-
-          <div className="panel">
-            <h2>Net Balances</h2>
-            {ledgerBalances.length === 0 ? (
-              <p>No balances yet. Add an expense to begin.</p>
-            ) : (
-              <ul className="balance-list">
-                {ledgerBalances.map((row) => (
-                  <li key={row.user}>
-                    <span>{row.user}</span>
-                    <strong
-                      className={
-                        row.balance > 0
-                          ? "is-positive"
-                          : row.balance < 0
-                            ? "is-negative"
-                            : ""
-                      }
-                    >
-                      {formatCurrency(row.balance)}
-                    </strong>
-                  </li>
-                ))}
-              </ul>
-            )}
-
-            <h2>Raw Expenses</h2>
-            {expenses.length === 0 ? (
-              <p>No expenses recorded yet.</p>
-            ) : (
-              <ul className="expense-list">
-                {expenses.map((expense) => (
-                  <li key={expense.id}>
-                    <p>
-                      <strong>
-                        {expense.description || "Untitled expense"}
-                      </strong>
-                    </p>
-                    <p>
-                      {expense.paid_by} paid {formatCurrency(expense.amount)}
-                    </p>
-                    <p>Split among: {expense.split_among.join(", ")}</p>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+          <section className="ledger-section">
+            <div className="section-head">
+              <h3>Recent Activity</h3>
+              <p>Clear, bank-style transaction history.</p>
+            </div>
+            {renderExpenseList()}
+          </section>
         </section>
       );
     }
@@ -846,56 +1021,244 @@ function App() {
   return (
     <div className="app-shell">
       <Toaster
-        position="top-right"
-        toastOptions={{ style: { fontSize: "0.88rem" } }}
+        position="top-center"
+        toastOptions={{ style: { fontSize: "0.88rem", borderRadius: "16px" } }}
       />
-      <header className="top-bar">
-        <div className="brand-wrap">
-          <span className="brand">Settle Kar</span>
-          <span
-            className={`health-dot ${apiHealthy ? "is-up" : "is-down"}`}
-            title={apiHealthy ? "Backend connected" : "Backend disconnected"}
-            aria-label={
-              apiHealthy ? "Backend connected" : "Backend disconnected"
-            }
-          />
-        </div>
-
-        <label className="user-switch" htmlFor="active-user-select">
-          <span>Switch Active User</span>
-          <select
-            id="active-user-select"
-            value={activeUser}
-            onChange={(event) => setActiveUser(event.target.value)}
-            disabled={users.length === 0}
-          >
-            {users.map((user) => (
-              <option key={user} value={user}>
-                {user}
-              </option>
-            ))}
-          </select>
-        </label>
-      </header>
-
-      <nav className="tabs" aria-label="Main sections">
-        {tabs.map((tab) => (
+      <div className="app-frame">
+        <header className="top-bar">
           <button
-            key={tab}
             type="button"
-            className={`tab-btn ${activeTab === tab ? "active" : ""}`}
-            onClick={() => setActiveTab(tab)}
+            className="brand-wrap brand-btn"
+            onClick={() => setActiveTab("Ledger")}
           >
-            {tab}
+            <span className="brand-mark">SK</span>
+            <span className="brand-stack">
+              <span className="brand">Settle Kar</span>
+              <span className="brand-subline">
+                <span
+                  className={`health-dot ${apiHealthy ? "is-up" : "is-down"}`}
+                />
+                <span>{apiHealthy ? "Live" : "Offline"}</span>
+              </span>
+            </span>
           </button>
-        ))}
-      </nav>
 
-      <main className="tab-content">
-        <h1>{activeTab}</h1>
-        <p className="active-user">Current active user: {activeUser}</p>
-        <ErrorBoundary>{renderTab()}</ErrorBoundary>
-      </main>
+          <button
+            type="button"
+            className="avatar-btn"
+            onClick={openProfileSheet}
+            aria-label="Switch active user"
+          >
+            <span>{activeUserInitials}</span>
+          </button>
+        </header>
+
+        <main className="tab-content">
+          <ErrorBoundary>{renderTab()}</ErrorBoundary>
+        </main>
+
+        <nav className="bottom-nav" aria-label="Primary navigation">
+          {tabs.map((tab) => {
+            const TabIcon = TAB_META[tab].icon;
+            const isActive = activeTab === tab;
+            return (
+              <button
+                key={tab}
+                type="button"
+                className={`bottom-nav-btn ${isActive ? "active" : ""}`}
+                onClick={() => setActiveTab(tab)}
+              >
+                <TabIcon className="nav-icon" />
+                <span>{TAB_META[tab].label}</span>
+              </button>
+            );
+          })}
+        </nav>
+
+        {isExpenseSheetOpen && (
+          <div className="sheet-backdrop" onClick={closeExpenseSheet}>
+            <section
+              className="expense-sheet"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="sheet-handle-row">
+                <span className="sheet-handle" />
+                <button
+                  type="button"
+                  className="icon-btn"
+                  onClick={closeExpenseSheet}
+                  aria-label="Close expense form"
+                >
+                  <CloseIcon className="nav-icon" />
+                </button>
+              </div>
+
+              <div className="sheet-header">
+                <div>
+                  <p className="eyebrow">New Expense</p>
+                  <h2>Split a payment instantly</h2>
+                </div>
+                <button
+                  type="button"
+                  className="sheet-chip"
+                  onClick={() =>
+                    setExpenseForm((current) => ({
+                      ...current,
+                      splitAmong: users.slice(),
+                    }))
+                  }
+                >
+                  Select all
+                </button>
+              </div>
+
+              <form
+                className="expense-form expense-sheet-form"
+                onSubmit={handleExpenseSubmit}
+              >
+                <label className="form-field">
+                  <span>Paid by</span>
+                  <select
+                    value={expenseForm.paidBy}
+                    onChange={(event) =>
+                      setExpenseForm((current) => ({
+                        ...current,
+                        paidBy: event.target.value,
+                      }))
+                    }
+                  >
+                    {users.map((user) => (
+                      <option key={user} value={user}>
+                        {user}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="form-field amount-field">
+                  <span>Amount</span>
+                  <div className="calc-input-wrap">
+                    <span className="currency-prefix">Rs.</span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={expenseForm.amount}
+                      onChange={(event) =>
+                        setExpenseForm((current) => ({
+                          ...current,
+                          amount: event.target.value,
+                        }))
+                      }
+                      placeholder="1200"
+                    />
+                  </div>
+                </label>
+
+                <label className="form-field">
+                  <span>Description</span>
+                  <input
+                    type="text"
+                    value={expenseForm.description}
+                    onChange={(event) =>
+                      setExpenseForm((current) => ({
+                        ...current,
+                        description: event.target.value,
+                      }))
+                    }
+                    placeholder="Booth setup, dinner, fuel"
+                  />
+                </label>
+
+                <div className="pill-group-wrap">
+                  <div className="section-head compact">
+                    <h3>Split among</h3>
+                    <p>Tap to deselect users.</p>
+                  </div>
+                  <div className="pill-group">
+                    {users.map((user) => {
+                      const isSelected = expenseForm.splitAmong.length
+                        ? expenseForm.splitAmong.includes(user)
+                        : true;
+
+                      return (
+                        <button
+                          key={user}
+                          type="button"
+                          className={`user-pill ${isSelected ? "selected" : "muted"}`}
+                          onClick={() => toggleSplitMember(user)}
+                        >
+                          <span>{avatarLabel(user)}</span>
+                          {user}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="sheet-spacer" />
+                <button
+                  type="submit"
+                  className="sheet-submit"
+                  disabled={submitting || users.length === 0}
+                >
+                  {submitting
+                    ? "Saving..."
+                    : `Split Rs. ${expenseDraftTotal.toFixed(2)}${expenseDraftTotal > 0 ? ` • Rs. ${expenseSplitPerPerson.toFixed(2)} each` : ""}`}
+                </button>
+              </form>
+            </section>
+          </div>
+        )}
+
+        {isProfileSheetOpen && (
+          <div className="sheet-backdrop" onClick={closeProfileSheet}>
+            <section
+              className="profile-sheet"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="sheet-handle-row">
+                <span className="sheet-handle" />
+                <button
+                  type="button"
+                  className="icon-btn"
+                  onClick={closeProfileSheet}
+                  aria-label="Close profile switcher"
+                >
+                  <CloseIcon className="nav-icon" />
+                </button>
+              </div>
+
+              <div className="sheet-header">
+                <div>
+                  <p className="eyebrow">Active profile</p>
+                  <h2>Switch user</h2>
+                </div>
+              </div>
+
+              <div className="profile-list">
+                {users.map((user) => (
+                  <button
+                    key={user}
+                    type="button"
+                    className={`profile-row ${activeUser === user ? "active" : ""}`}
+                    onClick={() => selectActiveUser(user)}
+                  >
+                    <span className="profile-avatar">{avatarLabel(user)}</span>
+                    <span className="profile-meta">
+                      <strong>{user}</strong>
+                      <small>
+                        {activeUser === user ? "Current user" : "Tap to switch"}
+                      </small>
+                    </span>
+                    {activeUser === user && <span className="profile-dot" />}
+                  </button>
+                ))}
+              </div>
+            </section>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
