@@ -109,9 +109,13 @@ def parse_db_timestamp(timestamp_value: str | None) -> datetime | None:
 
 def normalize_phone_number(phone: str) -> str:
     digits_only = re.sub(r"\D", "", phone)
-    if len(digits_only) < 7:
-        raise ValueError("Invalid phone number")
-    return digits_only
+    if digits_only:
+        return digits_only
+
+    normalized_text = phone.strip()
+    if not normalized_text:
+        raise ValueError("Phone number is required")
+    return normalized_text
 
 
 def init_db() -> None:

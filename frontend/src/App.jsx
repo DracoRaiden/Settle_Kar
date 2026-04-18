@@ -9,7 +9,11 @@ const ROOT_TABS = {
 const API_BASE_URL = "http://127.0.0.1:8000";
 
 function normalizePhoneNumber(phone) {
-  return phone.replace(/\D/g, "");
+  const digitsOnly = phone.replace(/\D/g, "");
+  if (digitsOnly) {
+    return digitsOnly;
+  }
+  return phone.trim();
 }
 
 const GROUPS_MOCK = [
@@ -630,8 +634,8 @@ function AuthScreen({ onAuthenticated }) {
   async function handleSubmit(event) {
     event.preventDefault();
     const normalizedPhone = normalizePhoneNumber(phone);
-    if (normalizedPhone.length < 7) {
-      setStatus("Enter a valid phone number.");
+    if (!normalizedPhone) {
+      setStatus("Enter a phone number.");
       return;
     }
     if (mode === AUTH_MODES.register && username.trim().length < 2) {
@@ -856,8 +860,8 @@ function GroupDetailScreen({ group, onBack }) {
     }
 
     const normalizedDigits = normalizePhoneNumber(phone);
-    if (normalizedDigits.length < 7) {
-      setMemberStatus("Please enter a valid phone number.");
+    if (!normalizedDigits) {
+      setMemberStatus("Please enter a phone number.");
       return;
     }
 
