@@ -16,6 +16,40 @@ function normalizePhoneNumber(phone) {
   return phone.trim();
 }
 
+function roundToTwo(value) {
+  return Math.round(value * 100) / 100;
+}
+
+function buildEvenSplitShares(totalAmount, participantIds) {
+  if (!participantIds.length) {
+    return [];
+  }
+
+  const roundedTotal = roundToTwo(Number(totalAmount) || 0);
+  const baseShare = roundToTwo(roundedTotal / participantIds.length);
+  const shares = participantIds.map(() => baseShare);
+  const roundingDelta = roundToTwo(
+    roundedTotal - shares.reduce((sum, share) => sum + share, 0),
+  );
+
+  shares[shares.length - 1] = roundToTwo(
+    shares[shares.length - 1] + roundingDelta,
+  );
+  return shares;
+}
+
+function buildManualShareDraft(members, totalAmount = 0) {
+  const participantIds = members.map((member) => member.id);
+  const evenShares = buildEvenSplitShares(totalAmount, participantIds);
+
+  return Object.fromEntries(
+    participantIds.map((memberId, index) => [
+      memberId,
+      totalAmount > 0 ? evenShares[index].toFixed(2) : "",
+    ]),
+  );
+}
+
 const GROUPS_MOCK = [
   {
     id: "hackathon-trip",
@@ -184,19 +218,18 @@ function calculateBalancesFromExpenses(members, expenses) {
       return;
     }
 
-    const share = Math.round((expense.amount / splitAmong.length) * 100) / 100;
-    const roundingDelta =
-      Math.round((expense.amount - share * splitAmong.length) * 100) / 100;
+    const shareAmounts = Array.isArray(expense.splitAmounts)
+      ? expense.splitAmounts.map((share) => roundToTwo(Number(share) || 0))
+      : buildEvenSplitShares(expense.amount, splitAmong);
 
     splitAmong.forEach((memberId, index) => {
-      const shareAmount =
-        index === splitAmong.length - 1 ? share + roundingDelta : share;
-      balances[memberId] =
-        Math.round((balances[memberId] - shareAmount) * 100) / 100;
+      const shareAmount = shareAmounts[index] ?? 0;
+      balances[memberId] = roundToTwo(balances[memberId] - shareAmount);
     });
 
-    balances[expense.payerId] =
-      Math.round((balances[expense.payerId] + expense.amount) * 100) / 100;
+    balances[expense.payerId] = roundToTwo(
+      (balances[expense.payerId] ?? 0) + roundToTwo(expense.amount),
+    );
   });
 
   Object.keys(balances).forEach((memberId) => {
@@ -429,7 +462,7 @@ function DebtGraph({ group, balances, settlements }) {
   );
 }
 
-function LedgerScreen({ group, balances }) {
+function LedgerScreen({ group, balances, onCreateExpense }) {
   const activities = group.expenses;
   const activeBalance = balances[group.activeMemberId] ?? 0;
   const netLabel = activeBalance >= 0 ? "You are owed" : "You owe";
@@ -465,6 +498,7 @@ function LedgerScreen({ group, balances }) {
 
       <button
         type="button"
+        onClick={onCreateExpense}
         className="w-full rounded-2xl bg-emerald-500 px-4 py-3.5 text-sm font-semibold text-white shadow-md shadow-emerald-500/20 transition active:scale-[0.99]"
       >
         New Expense
@@ -511,6 +545,412 @@ function LedgerScreen({ group, balances }) {
             </div>
           ))}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function ExpenseSheet({ group, onClose, onSave }) {
+  const initialParticipantIds = group.members.map((member) => member.id);
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [amount, setAmount] = useState("");
+  const [paidBy, setPaidBy] = useState(
+    group.activeMemberId ?? group.members[0]?.id ?? "",
+  );
+  const [splitMode, setSplitMode] = useState("even");
+  const [selectedParticipantIds, setSelectedParticipantIds] = useState(
+    initialParticipantIds,
+  );
+  const [manualShares, setManualShares] = useState(() =>
+    buildManualShareDraft(group.members),
+  );
+  const [status, setStatus] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const evenPreview = buildEvenSplitShares(
+    Number(amount) || 0,
+    selectedParticipantIds,
+  );
+
+  const selectedMembers = group.members.filter((member) =>
+    selectedParticipantIds.includes(member.id),
+  );
+
+  const manualTotal = roundToTwo(
+    selectedParticipantIds.reduce(
+      (sum, memberId) => sum + (Number(manualShares[memberId]) || 0),
+      0,
+    ),
+  );
+
+  function handleModeChange(nextMode) {
+    setSplitMode(nextMode);
+    setStatus("");
+
+    if (nextMode === "manual") {
+      const currentAmount = Number(amount) || 0;
+      setManualShares(buildManualShareDraft(group.members, currentAmount));
+    }
+  }
+
+  function handleToggleParticipant(memberId) {
+    setSelectedParticipantIds((current) => {
+      const nextSelection = current.includes(memberId)
+        ? current.filter((id) => id !== memberId)
+        : [...current, memberId];
+
+      if (nextSelection.length === 0) {
+        setStatus("Select at least one participant.");
+        return current;
+      }
+
+      setStatus("");
+      return nextSelection;
+    });
+  }
+
+  async function handleSubmit(event) {
+    event.preventDefault();
+
+    const trimmedTitle = title.trim();
+    if (!trimmedTitle) {
+      setStatus("Enter an expense title.");
+      return;
+    }
+
+    const parsedAmount = Number(amount);
+    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+      setStatus("Enter a valid total amount.");
+      return;
+    }
+
+    if (!selectedParticipantIds.length) {
+      setStatus("Select at least one participant.");
+      return;
+    }
+
+    const normalizedDescription = description.trim();
+    const normalizedAmount = roundToTwo(parsedAmount);
+    const paidByMember =
+      group.members.find((member) => member.id === paidBy) ?? null;
+    const selectedBackendParticipants = selectedMembers.map(
+      (member) => member.name,
+    );
+
+    let splitAmounts = null;
+    if (splitMode === "manual") {
+      splitAmounts = selectedParticipantIds.map((memberId) => {
+        const share = Number(manualShares[memberId]);
+        return Number.isFinite(share) ? roundToTwo(share) : Number.NaN;
+      });
+
+      if (splitAmounts.some((share) => !Number.isFinite(share) || share <= 0)) {
+        setStatus("Enter a valid amount for every selected participant.");
+        return;
+      }
+
+      const manualSum = roundToTwo(
+        splitAmounts.reduce((sum, share) => sum + share, 0),
+      );
+
+      if (Math.abs(manualSum - normalizedAmount) > 0.01) {
+        setStatus("Manual shares must add up to the total amount.");
+        return;
+      }
+    }
+
+    setIsSubmitting(true);
+    setStatus("");
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/expenses`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          paid_by: paidByMember?.name ?? paidBy,
+          amount: normalizedAmount,
+          split_among: selectedBackendParticipants,
+          description: normalizedDescription,
+          split_mode: splitMode,
+          split_amounts: splitAmounts ?? undefined,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail ?? "Could not create expense.");
+      }
+
+      onSave({
+        id: data.id ?? `expense-${Date.now()}`,
+        title: trimmedTitle,
+        subtitle:
+          normalizedDescription ||
+          (splitMode === "manual"
+            ? "Manually loaded variable costs"
+            : `Split evenly among ${selectedParticipantIds.length} members`),
+        amount: roundToTwo(data.amount ?? normalizedAmount),
+        payerId: paidBy,
+        splitAmong: selectedParticipantIds,
+        splitMode: data.split_mode ?? splitMode,
+        splitAmounts:
+          data.split_amounts ??
+          (splitMode === "manual"
+            ? splitAmounts
+            : buildEvenSplitShares(normalizedAmount, selectedParticipantIds)),
+      });
+
+      onClose();
+    } catch (error) {
+      setStatus(error.message || "Could not create expense.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end bg-slate-950/45 p-2 backdrop-blur-sm sm:p-4">
+      <div className="mx-auto flex max-h-[calc(100vh-1rem)] w-full max-w-md flex-col overflow-hidden rounded-t-[28px] bg-white px-5 pb-[calc(20px+env(safe-area-inset-bottom))] pt-3 shadow-2xl shadow-slate-900/25 sm:max-h-[calc(100vh-2rem)]">
+        <div className="mx-auto mb-4 h-1.5 w-12 rounded-full bg-slate-200" />
+
+        <div className="mb-4 flex items-start justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+              New expense
+            </p>
+            <h2 className="mt-1 text-xl font-bold text-slate-900">
+              Add a group bill
+            </h2>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-full bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-600"
+          >
+            Close
+          </button>
+        </div>
+
+        <form
+          className="flex-1 space-y-4 overflow-y-auto pr-1"
+          onSubmit={handleSubmit}
+        >
+          <div>
+            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Expense Title
+            </label>
+            <input
+              type="text"
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              placeholder="Dinner, cab, groceries"
+              className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-slate-400"
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Total Amount
+            </label>
+            <div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+              <span className="text-sm font-bold text-slate-500">Rs.</span>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={amount}
+                onChange={(event) => setAmount(event.target.value)}
+                placeholder="0.00"
+                className="w-full border-0 bg-transparent p-0 text-lg font-bold text-slate-900 outline-none placeholder:text-slate-400"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Paid By
+            </label>
+            <select
+              value={paidBy}
+              onChange={(event) => setPaidBy(event.target.value)}
+              className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-400"
+            >
+              {group.members.map((member) => (
+                <option key={member.id} value={member.id}>
+                  {member.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Split Mode
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => handleModeChange("even")}
+                className={`rounded-2xl border px-4 py-3 text-left transition ${
+                  splitMode === "even"
+                    ? "border-slate-900 bg-slate-900 text-white"
+                    : "border-slate-200 bg-slate-50 text-slate-700"
+                }`}
+              >
+                <span className="block text-sm font-semibold">Even split</span>
+                <span
+                  className={`mt-1 block text-xs ${splitMode === "even" ? "text-slate-300" : "text-slate-500"}`}
+                >
+                  Divide the total equally across selected people.
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleModeChange("manual")}
+                className={`rounded-2xl border px-4 py-3 text-left transition ${
+                  splitMode === "manual"
+                    ? "border-slate-900 bg-slate-900 text-white"
+                    : "border-slate-200 bg-slate-50 text-slate-700"
+                }`}
+              >
+                <span className="block text-sm font-semibold">
+                  Manual split
+                </span>
+                <span
+                  className={`mt-1 block text-xs ${splitMode === "manual" ? "text-slate-300" : "text-slate-500"}`}
+                >
+                  Enter different amounts for each participant.
+                </span>
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Participants
+              </label>
+              <span className="text-xs font-semibold text-slate-500">
+                {selectedParticipantIds.length} selected
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {group.members.map((member) => {
+                const isSelected = selectedParticipantIds.includes(member.id);
+                return (
+                  <button
+                    key={member.id}
+                    type="button"
+                    onClick={() => handleToggleParticipant(member.id)}
+                    className={`rounded-full px-3 py-2 text-sm font-semibold transition ${
+                      isSelected
+                        ? "bg-slate-900 text-white"
+                        : "bg-slate-100 text-slate-600"
+                    }`}
+                  >
+                    {member.initials} {member.name}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {splitMode === "even" ? (
+            <div className="rounded-2xl bg-slate-50 p-4">
+              <div className="mb-2 flex items-center justify-between">
+                <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Even preview
+                </span>
+                <span className="text-xs font-semibold text-slate-600">
+                  Rs.{" "}
+                  {Number.isFinite(Number(amount))
+                    ? roundToTwo(Number(amount)).toFixed(2)
+                    : "0.00"}
+                </span>
+              </div>
+              <div className="space-y-2 text-sm text-slate-700">
+                {selectedMembers.map((member, index) => (
+                  <div
+                    key={member.id}
+                    className="flex items-center justify-between rounded-xl bg-white px-3 py-2"
+                  >
+                    <span>{member.name}</span>
+                    <span className="font-semibold text-slate-900">
+                      Rs. {evenPreview[index]?.toFixed(2) ?? "0.00"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-3 rounded-2xl bg-slate-50 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Manual shares
+                </span>
+                <span className="text-xs font-semibold text-slate-600">
+                  Total Rs. {manualTotal.toFixed(2)}
+                </span>
+              </div>
+              <div className="space-y-2">
+                {selectedMembers.map((member) => (
+                  <label
+                    key={member.id}
+                    className="flex items-center justify-between gap-3 rounded-xl bg-white px-3 py-2"
+                  >
+                    <span className="text-sm font-medium text-slate-700">
+                      {member.name}
+                    </span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={manualShares[member.id] ?? ""}
+                      onChange={(event) =>
+                        setManualShares((current) => ({
+                          ...current,
+                          [member.id]: event.target.value,
+                        }))
+                      }
+                      placeholder="0.00"
+                      className="w-28 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-right text-sm font-semibold text-slate-900 outline-none focus:border-slate-400"
+                    />
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div>
+            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Note
+            </label>
+            <textarea
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+              placeholder="Optional context for the expense"
+              rows="3"
+              className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-slate-400"
+            />
+          </div>
+
+          {status && (
+            <p className="rounded-2xl bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
+              {status}
+            </p>
+          )}
+
+          <button
+            type="submit"
+            disabled={isSubmitting}
+            className="w-full rounded-2xl bg-emerald-500 px-4 py-3.5 text-sm font-semibold text-white shadow-md shadow-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-70"
+          >
+            {isSubmitting ? "Saving..." : "Save Expense"}
+          </button>
+        </form>
       </div>
     </div>
   );
@@ -1072,6 +1512,7 @@ function GroupDetailScreen({ group, onBack }) {
   const [memberPhone, setMemberPhone] = useState("");
   const [memberStatus, setMemberStatus] = useState("");
   const [isAddingMember, setIsAddingMember] = useState(false);
+  const [isExpenseSheetOpen, setIsExpenseSheetOpen] = useState(false);
 
   const balances = useMemo(
     () => calculateBalancesFromExpenses(groupData.members, groupData.expenses),
@@ -1160,6 +1601,13 @@ function GroupDetailScreen({ group, onBack }) {
     }
   }
 
+  function handleExpenseSaved(expense) {
+    setGroupData((current) => ({
+      ...current,
+      expenses: [expense, ...current.expenses],
+    }));
+  }
+
   return (
     <section className="w-full font-sans">
       <header className="mb-6 flex items-center justify-between">
@@ -1235,7 +1683,11 @@ function GroupDetailScreen({ group, onBack }) {
       </div>
 
       {innerTab === INNER_TABS.ledger && (
-        <LedgerScreen group={groupData} balances={balances} />
+        <LedgerScreen
+          group={groupData}
+          balances={balances}
+          onCreateExpense={() => setIsExpenseSheetOpen(true)}
+        />
       )}
       {innerTab === INNER_TABS.settle && (
         <SettleScreen
@@ -1249,6 +1701,14 @@ function GroupDetailScreen({ group, onBack }) {
           group={groupData}
           balances={balances}
           settlements={settlements}
+        />
+      )}
+
+      {isExpenseSheetOpen && (
+        <ExpenseSheet
+          group={groupData}
+          onClose={() => setIsExpenseSheetOpen(false)}
+          onSave={handleExpenseSaved}
         />
       )}
     </section>
@@ -1533,7 +1993,7 @@ function BottomNavigation({ activeTab, onChange }) {
 
   return (
     <nav
-      className="fixed bottom-0 w-full bg-white border-t border-slate-200 px-6 py-3 flex justify-between items-center pb-safe"
+      className="fixed bottom-3 left-1/2 z-40 grid w-[calc(100%-1rem)] max-w-md -translate-x-1/2 grid-cols-3 items-center rounded-full border border-slate-200 bg-white/90 px-3 py-3 shadow-xl shadow-slate-900/10 backdrop-blur-md"
       aria-label="Primary"
     >
       {items.map(({ key, label, Icon }) => {
@@ -1544,7 +2004,7 @@ function BottomNavigation({ activeTab, onChange }) {
             key={key}
             type="button"
             onClick={() => onChange(key)}
-            className={`flex flex-col items-center gap-1 text-xs font-semibold ${
+            className={`flex flex-col items-center gap-1 rounded-full px-3 py-2 text-xs font-semibold transition ${
               isActive ? "text-blue-600" : "text-slate-400"
             }`}
             aria-current={isActive ? "page" : undefined}
@@ -1598,7 +2058,7 @@ export default function App() {
 
   return (
     <div
-      className={`min-h-screen bg-slate-50 font-sans text-slate-900 ${
+      className={`min-h-screen overflow-x-hidden bg-slate-50 font-sans text-slate-900 ${
         selectedGroup ? "" : "pb-24"
       }`}
     >

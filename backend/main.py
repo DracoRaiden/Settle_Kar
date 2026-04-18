@@ -43,6 +43,8 @@ class ExpenseCreate(BaseModel):
     amount: float = Field(gt=0)
     split_among: list[str] = Field(min_length=1)
     description: str = ""
+    split_mode: str = "even"
+    split_amounts: list[float] | None = None
 
 
 class AssetOffsetCreate(BaseModel):
@@ -145,6 +147,7 @@ def init_db() -> None:
                 paid_by TEXT NOT NULL,
                 amount REAL NOT NULL,
                 description TEXT NOT NULL,
+                split_mode TEXT NOT NULL DEFAULT 'even',
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (paid_by) REFERENCES users(name)
             )
@@ -264,6 +267,11 @@ def init_db() -> None:
                 UPDATE settled_edges
                 SET settlement_verified_at = COALESCE(settlement_verified_at, settled_at)
                 """
+            )
+
+        if not has_column(connection, "expenses", "split_mode"):
+            connection.execute(
+                "ALTER TABLE expenses ADD COLUMN split_mode TEXT NOT NULL DEFAULT 'even'"
             )
         for user_name in DEFAULT_USERS:
             connection.execute(
@@ -786,7 +794,7 @@ def lookup_user_by_phone(phone: str) -> dict[str, bool | dict[str, int | str]]:
 def get_expenses() -> dict[str, list[dict[str, float | int | str | list[str]]]]:
     with get_connection() as connection:
         expense_rows = connection.execute(
-            "SELECT id, paid_by, amount, description, created_at FROM expenses ORDER BY id DESC"
+            "SELECT id, paid_by, amount, description, split_mode, created_at FROM expenses ORDER BY id DESC"
         ).fetchall()
 
         expenses: list[dict[str, float | int | str | list[str]]] = []
@@ -801,7 +809,9 @@ def get_expenses() -> dict[str, list[dict[str, float | int | str | list[str]]]]:
                     "paid_by": expense_row["paid_by"],
                     "amount": float(expense_row["amount"]),
                     "description": expense_row["description"],
+                    "split_mode": expense_row["split_mode"],
                     "split_among": [row["user_name"] for row in split_rows],
+                    "split_amounts": [float(row["share_amount"]) for row in split_rows],
                     "created_at": expense_row["created_at"],
                 }
             )
@@ -812,6 +822,10 @@ def get_expenses() -> dict[str, list[dict[str, float | int | str | list[str]]]]:
 @app.post("/api/expenses")
 def create_expense(payload: ExpenseCreate) -> dict[str, float | int | str | list[str]]:
     unique_participants = sorted(set(payload.split_among))
+    split_mode = payload.split_mode.strip().lower()
+
+    if split_mode not in {"even", "manual"}:
+        raise HTTPException(status_code=400, detail="Split mode must be even or manual")
 
     with get_connection() as connection:
         valid_users = set(fetch_users(connection))
@@ -822,11 +836,39 @@ def create_expense(payload: ExpenseCreate) -> dict[str, float | int | str | list
         if not set(unique_participants).issubset(valid_users):
             raise HTTPException(status_code=400, detail="Split participants contain unknown users")
 
-        shares = split_amount_evenly(payload.amount, len(unique_participants))
+        if split_mode == "manual":
+            if payload.split_amounts is None:
+                raise HTTPException(status_code=400, detail="Manual splits require split amounts")
+
+            shares = [round(float(share), 2) for share in payload.split_amounts]
+            if len(shares) != len(unique_participants):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Split amounts must match the number of participants",
+                )
+
+            if any(share <= 0 for share in shares):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Split amounts must be greater than zero",
+                )
+
+            if abs(round(sum(shares), 2) - round(payload.amount, 2)) > 0.01:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Split amounts must add up to the total expense amount",
+                )
+        else:
+            shares = split_amount_evenly(payload.amount, len(unique_participants))
 
         cursor = connection.execute(
-            "INSERT INTO expenses(paid_by, amount, description) VALUES (?, ?, ?)",
-            (payload.paid_by, payload.amount, payload.description.strip()),
+            "INSERT INTO expenses(paid_by, amount, description, split_mode) VALUES (?, ?, ?, ?)",
+            (
+                payload.paid_by,
+                payload.amount,
+                payload.description.strip(),
+                split_mode,
+            ),
         )
         expense_id = cursor.lastrowid
 
@@ -843,7 +885,9 @@ def create_expense(payload: ExpenseCreate) -> dict[str, float | int | str | list
         "paid_by": payload.paid_by,
         "amount": round(payload.amount, 2),
         "description": payload.description.strip(),
+        "split_mode": split_mode,
         "split_among": unique_participants,
+        "split_amounts": [round(float(share), 2) for share in shares],
     }
 
 
