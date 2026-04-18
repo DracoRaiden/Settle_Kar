@@ -1,9 +1,11 @@
 import hashlib
 import io
+import html
 import re
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
+from math import cos, pi, sin
 
 import pytesseract
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -56,6 +58,15 @@ class AssetOffsetDecision(BaseModel):
     actor_user: str
     action: str
 
+
+class RegisterRequest(BaseModel):
+    phone: str
+    username: str
+
+
+class LoginRequest(BaseModel):
+    phone: str
+
 app = FastAPI(title="Settle Kar API")
 
 # Allow local React frontend during development.
@@ -96,8 +107,25 @@ def parse_db_timestamp(timestamp_value: str | None) -> datetime | None:
     return None
 
 
+def normalize_phone_number(phone: str) -> str:
+    digits_only = re.sub(r"\D", "", phone)
+    if len(digits_only) < 7:
+        raise ValueError("Invalid phone number")
+    return digits_only
+
+
 def init_db() -> None:
     with get_connection() as connection:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                phone TEXT NOT NULL UNIQUE,
+                username TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -325,6 +353,16 @@ def on_startup() -> None:
 def fetch_users(connection: sqlite3.Connection) -> list[str]:
     rows = connection.execute("SELECT name FROM users ORDER BY name").fetchall()
     return [row["name"] for row in rows]
+
+
+def fetch_app_user_by_phone(
+    connection: sqlite3.Connection,
+    normalized_phone: str,
+) -> sqlite3.Row | None:
+    return connection.execute(
+        "SELECT id, phone, username, created_at FROM app_users WHERE phone = ?",
+        (normalized_phone,),
+    ).fetchone()
 
 
 def split_amount_evenly(total_amount: float, participant_count: int) -> list[float]:
@@ -653,6 +691,82 @@ def get_users() -> dict[str, list[str]]:
         return {"users": fetch_users(connection)}
 
 
+@app.post("/api/auth/register")
+def register_user(payload: RegisterRequest) -> dict[str, bool | dict[str, int | str]]:
+    username = payload.username.strip()
+    if len(username) < 2:
+        raise HTTPException(status_code=400, detail="Username must be at least 2 characters")
+
+    try:
+        normalized_phone = normalize_phone_number(payload.phone)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+    with get_connection() as connection:
+        existing_user = fetch_app_user_by_phone(connection, normalized_phone)
+        if existing_user is not None:
+            raise HTTPException(status_code=409, detail="Phone number is already registered")
+
+        cursor = connection.execute(
+            "INSERT INTO app_users(phone, username) VALUES (?, ?)",
+            (normalized_phone, username),
+        )
+        connection.commit()
+
+        return {
+            "registered": True,
+            "user": {
+                "id": int(cursor.lastrowid),
+                "phone": normalized_phone,
+                "username": username,
+            },
+        }
+
+
+@app.post("/api/auth/login")
+def login_user(payload: LoginRequest) -> dict[str, bool | dict[str, int | str]]:
+    try:
+        normalized_phone = normalize_phone_number(payload.phone)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+    with get_connection() as connection:
+        existing_user = fetch_app_user_by_phone(connection, normalized_phone)
+        if existing_user is None:
+            raise HTTPException(status_code=404, detail="Phone number is not registered")
+
+        return {
+            "authenticated": True,
+            "user": {
+                "id": int(existing_user["id"]),
+                "phone": str(existing_user["phone"]),
+                "username": str(existing_user["username"]),
+            },
+        }
+
+
+@app.get("/api/users/lookup")
+def lookup_user_by_phone(phone: str) -> dict[str, bool | dict[str, int | str]]:
+    try:
+        normalized_phone = normalize_phone_number(phone)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+    with get_connection() as connection:
+        existing_user = fetch_app_user_by_phone(connection, normalized_phone)
+        if existing_user is None:
+            raise HTTPException(status_code=404, detail="No user found for this phone number")
+
+        return {
+            "exists": True,
+            "user": {
+                "id": int(existing_user["id"]),
+                "phone": str(existing_user["phone"]),
+                "username": str(existing_user["username"]),
+            },
+        }
+
+
 @app.get("/api/expenses")
 def get_expenses() -> dict[str, list[dict[str, float | int | str | list[str]]]]:
     with get_connection() as connection:
@@ -734,6 +848,160 @@ def get_ledger() -> dict[str, list[dict[str, float | str | bool | None]]]:
     return {
         "balances": balance_rows,
         "settlements": settlement_rows,
+    }
+
+
+def build_graph_layout(node_count: int) -> list[tuple[int, int]]:
+    if node_count <= 0:
+        return []
+
+    if node_count == 1:
+        return [(160, 70)]
+
+    positions: list[tuple[int, int]] = [(160, 70)]
+    remaining_count = node_count - 1
+    center_x = 160
+    center_y = 156
+    radius = 88
+    start_angle = 210 * pi / 180
+    end_angle = -30 * pi / 180
+
+    for index in range(remaining_count):
+        ratio = 0.5 if remaining_count == 1 else index / (remaining_count - 1)
+        angle = start_angle + (end_angle - start_angle) * ratio
+        x_pos = int(round(center_x + radius * cos(angle)))
+        y_pos = int(round(center_y + radius * sin(angle)))
+        positions.append((x_pos, y_pos))
+
+    return positions
+
+
+def build_group_graph_svg(
+    group_name: str,
+    users: list[dict[str, float | str]],
+    settlements: list[dict[str, float | str | bool | None]],
+) -> str:
+    if not users:
+        return (
+            '<svg viewBox="0 0 320 240" class="h-[280px] w-full" aria-label="Empty graph">'
+            '<text x="160" y="120" text-anchor="middle" fill="#64748b" '
+            'style="font-size:12px;font-weight:600;">No graph data</text></svg>'
+        )
+
+    sorted_users = sorted(users, key=lambda item: float(item["balance"]), reverse=True)
+    active_user = sorted_users[0]["user"]
+    layout_positions = build_graph_layout(len(sorted_users))
+    nodes = [
+        {
+            "user": str(user["user"]),
+            "balance": float(user["balance"]),
+            "active": str(user["user"]) == str(active_user),
+            "x": layout_positions[index][0],
+            "y": layout_positions[index][1],
+        }
+        for index, user in enumerate(sorted_users)
+    ]
+    node_lookup = {node["user"]: node for node in nodes}
+
+    edge_rows: list[str] = []
+    for settlement in settlements:
+        from_user = str(settlement["from"])
+        to_user = str(settlement["to"])
+        amount = round(float(settlement["amount"]), 2)
+        source = node_lookup.get(from_user)
+        target = node_lookup.get(to_user)
+        if source is None or target is None:
+            continue
+
+        dx = float(target["x"]) - float(source["x"])
+        dy = float(target["y"]) - float(source["y"])
+        distance = max((dx * dx + dy * dy) ** 0.5, 1.0)
+        offset_x = (dx / distance) * 28
+        offset_y = (dy / distance) * 28
+        x1 = float(source["x"]) + offset_x
+        y1 = float(source["y"]) + offset_y
+        x2 = float(target["x"]) - offset_x
+        y2 = float(target["y"]) - offset_y
+        label_x = (float(source["x"]) + float(target["x"])) / 2
+        label_y = (float(source["y"]) + float(target["y"])) / 2 - 10
+
+        edge_rows.append(
+            f'<line x1="{x1:.2f}" y1="{y1:.2f}" x2="{x2:.2f}" y2="{y2:.2f}" '
+            'stroke="#64748b" stroke-width="2.5" stroke-linecap="round" '
+            'marker-end="url(#arrowhead)" />'
+        )
+        edge_rows.append(
+            f'<rect x="{label_x - 28:.2f}" y="{label_y - 11:.2f}" width="56" height="22" '
+            'rx="11" fill="#ffffff" opacity="0.96" />'
+        )
+        edge_rows.append(
+            f'<text x="{label_x:.2f}" y="{label_y + 4:.2f}" text-anchor="middle" '
+            'fill="#334155" style="font-size:10px;font-weight:700;">'
+            f'Rs. {amount:.0f}</text>'
+        )
+
+    node_rows: list[str] = []
+    for node in nodes:
+        node_rows.append(
+            f'<circle cx="{node["x"]}" cy="{node["y"]}" r="28" '
+            f'fill="{"#0f172a" if node["active"] else "#ffffff"}" '
+            f'stroke="{"#1d4ed8" if node["active"] else "#cbd5e1"}" '
+            f'stroke-width="{"4" if node["active"] else "2"}" />'
+        )
+        node_rows.append(
+            f'<text x="{node["x"]}" y="{float(node["y"]) + 5:.2f}" text-anchor="middle" '
+            f'fill="{"#ffffff" if node["active"] else "#334155"}" '
+            'style="font-size:11px;font-weight:800;">'
+            f'{html.escape(str(node["user"]))}</text>'
+        )
+        node_rows.append(
+            f'<text x="{node["x"]}" y="{float(node["y"]) + 46:.2f}" text-anchor="middle" '
+            'fill="#64748b" style="font-size:10px;font-weight:600;">'
+            f'{"Active User" if node["active"] else html.escape(str(node["user"]))}</text>'
+        )
+
+    graph_title = html.escape(group_name)
+    return (
+        '<svg viewBox="0 0 320 240" class="h-[280px] w-full" '
+        f'aria-label="Debt graph for {graph_title}">'
+        '<defs>'
+        '<marker id="arrowhead" markerWidth="8" markerHeight="8" refX="6.5" refY="3" orient="auto">'
+        '<path d="M0,0 L6,3 L0,6 Z" fill="#475569" />'
+        '</marker>'
+        '</defs>'
+        f'{"".join(edge_rows)}'
+        f'{"".join(node_rows)}'
+        '</svg>'
+    )
+
+
+@app.get("/api/groups/{group_id}/graph")
+def get_group_graph(group_id: str) -> dict[str, str]:
+    group_titles = {
+        "hackathon-trip": "Hackathon Trip",
+        "weekend-foods": "Weekend Foods",
+    }
+
+    with get_connection() as connection:
+        balances = compute_net_balances(connection)
+        settlements = optimize_settlements(balances)
+        settlement_rows = build_settlement_rows(connection, settlements)
+        connection.commit()
+
+    balance_rows = [
+        {"user": user, "balance": round(amount, 2)}
+        for user, amount in sorted(balances.items())
+    ]
+    svg_markup = build_group_graph_svg(
+        group_titles.get(group_id, group_id.replace("-", " ").title()),
+        balance_rows,
+        settlement_rows,
+    )
+
+    return {
+        "group_id": group_id,
+        "group_name": group_titles.get(group_id, group_id.replace("-", " ").title()),
+        "svg": svg_markup,
     }
 
 
