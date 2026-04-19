@@ -1,6 +1,7 @@
 # 💸 Settle Kar
 
 **The algorithmic debt-simplification engine for localized cash economies.**
+**Presentation Link:** https://gamma.app/docs/Split-smarter-Settle-faster-Trust-earned-anq4oy3qhpyrtu6?mode=doc
 
 Built for the **"Money Moves"** FinTech Hackathon.
 
