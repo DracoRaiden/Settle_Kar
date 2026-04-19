@@ -2048,7 +2048,7 @@ export default function App() {
 
   if (!authUser) {
     return (
-      <div className="min-h-screen bg-slate-50 font-sans text-slate-900">
+      <div className="dark-blue-theme min-h-screen bg-slate-50 font-sans text-slate-900">
         <main className="mx-auto w-full max-w-md px-5 pt-8 pb-10">
           <AuthScreen onAuthenticated={setAuthUser} />
         </main>
@@ -2058,7 +2058,7 @@ export default function App() {
 
   return (
     <div
-      className={`min-h-screen overflow-x-hidden bg-slate-50 font-sans text-slate-900 ${
+      className={`dark-blue-theme min-h-screen overflow-x-hidden bg-slate-50 font-sans text-slate-900 ${
         selectedGroup ? "" : "pb-24"
       }`}
     >
