@@ -1,227 +1,79 @@
-# Settle Kar
+# 💸 Settle Kar
 
-Settle Kar is a split-expense and debt-settlement platform that combines digital trust, OCR-based settlement verification, and asset-backed offset clearing.
+**The algorithmic debt-simplification engine for localized cash economies.**
 
-It includes:
+Built for the **"Money Moves"** FinTech Hackathon.
 
-- A FastAPI backend with SQLite persistence.
-- A React + Vite frontend.
-- Smart debt graph optimization.
-- OCR proof verification for payment receipts.
-- Trust-velocity scoring (Bronze, Silver, Gold).
-- Multi-modal asset offsets using digital vouchers.
+## 🚀 The Vision
 
-## Project Features
+In cash-heavy campus environments and shared living spaces, group expenses create a messy, high-friction web of micro-debts. When multiple people share dinners, travel, and supply costs, figuring out exactly "who owes whom" becomes a mathematical nightmare. This friction causes money to get stuck, settlements to be delayed, and trust to erode among peers.
 
-### 1. Expense + Ledger Engine
+**Settle Kar** is a mobile-first, Neo-Banking ledger that mathematically untangles group finances. Instead of just acting as a digital notebook, it actively optimizes how money moves.
 
-- Add expenses and split among users.
-- Compute net balances for each user.
-- Generate optimized debtor -> creditor settlement edges.
+When users input shared expenses, our backend engine runs a complex **graph optimization algorithm**. It instantly calculates the absolute minimum number of transactions required for the entire group to reach a zero balance. If User A owes User B Rs. 500, and User B owes User C Rs. 500, Settle Kar dynamically routes User A to pay User C directly—bypassing the middleman, reducing cash handovers, and accelerating liquidity in the local ecosystem.
 
-### 2. Zero-Cost Proof of Settlement (OCR)
+## 🛠️ Tech Stack
 
-- Upload receipt images to settle debts.
-- OCR text extraction using Tesseract.
-- Amount and timestamp validation.
-- Duplicate receipt detection via SHA-256 hash.
+We engineered Settle Kar for maximum speed and a frictionless user experience, splitting the architecture into a high-performance mathematical core and a highly polished client interface.
 
-### 3. Trust-Velocity Credit Scoring
+**Frontend (The Neo-Banking UI):**
 
-- Records debt creation and settlement times.
-- Awards trust points based on speed of settlement.
-- Exposes trust profile and tier progression.
+- **React & Vite:** For blazing-fast local development and instant component rendering.
+- **Tailwind CSS:** Implementing a mobile-first, high-trust FinTech design system with dynamic visual feedback (Net Balance Badges, Overlapping Avatars).
+- **Vercel:** Edge-network deployment.
 
-### 4. Multi-Modal Asset Offset (Liquidity Engine)
+**Backend (The Algorithmic Core):**
 
-- Registers predefined digital vouchers.
-- Debtor can propose settling debt with a voucher.
-- Creditor receives a high-priority accept/reject notification.
-- On accept, voucher ownership transfers and debt is cleared.
+- **Python 3:** The engine driving the heavy mathematical graph routing.
+- **FastAPI:** A lightning-fast REST API framework that provides native JSON validation and seamless frontend-backend communication.
+- **Greedy Network Flow Logic:** Custom-built debt simplification algorithms minimizing edges (transactions) in directed financial graphs.
 
-## Tech Stack
+## ✨ Core Features
 
-- Backend: FastAPI, SQLite, Pydantic
-- Frontend: React 18, Vite
-- OCR: pytesseract, Pillow, system Tesseract binary
+- **Sleek, Mobile-First Dashboard:** A responsive UI that provides instant clarity on net balances (+ / -) without overwhelming the user with raw data.
+- **Group-Based Ledger Isolation:** Manage multiple financial circles (e.g., "Hackathon Trip", "Hostel Room 402") with isolated debt graphs.
+- **Algorithmic Path Optimization:** The core graph engine mathematically calculates the fewest possible transactions needed to settle all debts in a group.
+- **Bank-Style Activity Feed:** Clear, categorized, and timestamped transaction histories for absolute financial transparency.
 
-## Repository Structure
+## 💻 Run it Locally
 
-```text
-backend/
-	main.py
-	requirements.txt
-frontend/
-	package.json
-	src/
-```
+To test the application locally, you will need two terminal windows to run the frontend and backend concurrently.
 
-## Prerequisites
+### 1. Start the Python Backend
 
-Install these before setup:
-
-1. Python 3.11+ (3.13 works as well)
-2. Node.js 18+
-3. npm (ships with Node.js)
-4. Tesseract OCR (required for receipt verification)
-
-### Install Tesseract OCR (Windows)
-
-1. Install Tesseract (for example, from UB Mannheim builds).
-2. Add the Tesseract install folder to PATH.
-3. Verify in terminal:
-
-```powershell
-tesseract --version
-```
-
-If this command fails, OCR settlement verification endpoints will return errors.
-
-## Complete Setup (First-Time Clone)
-
-### 1. Clone and enter project
-
-```powershell
-git clone <your-repo-url>
-cd Settle_Kar
-```
-
-### 2. Create and activate Python virtual environment
-
-Windows PowerShell:
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-```
-
-macOS/Linux:
+Navigate to the backend directory and start the FastAPI server:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+cd backend
+pip install -r requirements.txt
+uvicorn main:app --reload --port 8000
 ```
 
-### 3. Install backend dependencies
+````
 
-```powershell
-python -m pip install --upgrade pip
-python -m pip install -r .\backend\requirements.txt
-```
+_The API will be live at `http://localhost:8000`_
 
-### 4. Install frontend dependencies
+### 2. Start the React Frontend
 
-```powershell
+Open a new terminal, navigate to the frontend directory, and start Vite:
+
+```bash
 cd frontend
 npm install
-cd ..
-```
-
-## Run the App
-
-Open two terminals from the repository root.
-
-### Terminal A: Start backend
-
-```powershell
-.\.venv\Scripts\python.exe -m uvicorn --app-dir .\backend main:app --host 127.0.0.1 --port 8000
-```
-
-Backend health URL:
-
-```text
-http://127.0.0.1:8000/api/health
-```
-
-### Terminal B: Start frontend
-
-```powershell
-cd frontend
 npm run dev
 ```
 
-Frontend URL (default Vite):
+_The UI will be live at `http://localhost:5173`_
 
-```text
-http://127.0.0.1:5173
+## 🏆 Why it Wins "Money Moves"
+
+We didn't build a massive, multi-year banking platform with hundreds of bloated features. We built **100% of one highly specific, deeply impactful feature**. Settle Kar takes the anxiety out of shared finances, ensuring that capital keeps moving smoothly, quickly, and efficiently through localized economies.
+
+---
+
+_Designed and engineered during a 48-hour sprint._
+
 ```
 
-## Optional Frontend API Base URL
-
-Frontend defaults to `http://127.0.0.1:8000`.
-
-If needed, create `frontend/.env`:
-
-```env
-VITE_API_BASE_URL=http://127.0.0.1:8000
 ```
-
-## API Overview
-
-Core endpoints:
-
-- `GET /api/health`
-- `GET /api/users`
-- `GET /api/expenses`
-- `POST /api/expenses`
-- `GET /api/ledger`
-- `POST /api/settlements/verify-receipt`
-- `GET /api/trust-profile/{user_name}`
-- `GET /api/assets`
-- `POST /api/offsets/propose`
-- `POST /api/offsets/respond`
-
-## Demo Users and Assets
-
-Seeded users:
-
-- User A
-- User B
-- User C
-
-Seeded asset:
-
-- `POSTER_12X18_MATTE` -> 12x18 Matte Poster Voucher, Rs. 300
-
-## Build and Validation
-
-### Frontend production build
-
-```powershell
-cd frontend
-npm run build
-```
-
-### Backend syntax check
-
-```powershell
-cd backend
-python -m py_compile main.py
-```
-
-## Troubleshooting
-
-### 1. `404 Not Found` for new endpoints
-
-You are likely running an old backend process. Stop all running uvicorn servers and restart using the command from this README.
-
-### 2. `Could not connect to backend`
-
-- Ensure backend is running on port 8000.
-- Ensure frontend points to the same API URL.
-
-### 3. OCR errors during receipt verification
-
-- Confirm Tesseract is installed.
-- Confirm `tesseract --version` works in the same shell where backend runs.
-- Restart backend after updating PATH.
-
-### 4. Import/dependency issues
-
-Always install using the same Python interpreter used to run uvicorn. Using different global Python versions can cause package mismatch.
-
-## Contributor Notes
-
-- Backend database file: `backend/settle_kar.db` (auto-created).
-- CORS is enabled for local Vite dev origins.
-- Keep backend and frontend running concurrently during development.
+````
